@@ -67,4 +67,4 @@ Developed with material collaboration from **OpenAI / ChatGPT**, with AI assista
 
 ---
 
-**mini_ark is the seed. Project ARK is the ship.**
+**mini_ark is the tender. Project ARK is the ship.**
