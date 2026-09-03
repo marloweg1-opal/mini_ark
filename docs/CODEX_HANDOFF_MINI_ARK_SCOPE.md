@@ -160,3 +160,15 @@ Full cleaned staging completed on 2026-09-03:
 The first unrestricted profile pass copied 124294 files and had 12759 failures because it included Windows `AppData`/system profile cache residue. It is superseded by the cleaned pass. Use the cleaned staging root for review.
 
 Safety rule: do not remove `R:\Users`, `R:\Junior`, or `R:\Downloads` contents until the cleaned staging result is reviewed and OneDrive placeholder failures are either synced or intentionally skipped.
+
+Approved cleanup completed after review:
+
+- Cleanup report: `C:\mini_ark\docs\R_PROFILE_CLEANUP_2026-09-03_115901.json`
+- Quarantine root: `R:\_ark_quarantine\R_Profile_Source_Removals_2026-09-03_115901`
+- Planned moves: 4999
+- Moved to quarantine: 4987
+- Skipped: 109
+- Failed: 12
+- Files permanently deleted: 0
+
+The remaining `R:\Users` population is mostly Windows/profile residue. Do not delete it without a separate explicit approval for system/profile residue cleanup.

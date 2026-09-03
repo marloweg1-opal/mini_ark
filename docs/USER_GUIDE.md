@@ -273,6 +273,18 @@ Most recent cleaned staging run:
 
 The 5 failures are unavailable OneDrive cloud placeholders. Start/sync OneDrive and rerun the same plan if those files matter.
 
+Most recent approved cleanup run:
+
+- Cleanup report: `C:\mini_ark\docs\R_PROFILE_CLEANUP_2026-09-03_115901.json`
+- Quarantine root: `R:\_ark_quarantine\R_Profile_Source_Removals_2026-09-03_115901`
+- Planned moves: 4999
+- Moved to quarantine: 4987
+- Skipped: 109
+- Failed: 12
+- Files permanently deleted: 0
+
+The 12 failures were access-denied leftovers, mostly public desktop shortcuts plus one CSV. `R:\Junior` and `R:\Downloads` were reduced to `desktop.ini` residue. `R:\Users` still contains Windows/profile residue that was intentionally excluded from the safe asset cleanup pass.
+
 ## Update Rhythm
 
 Do not create new archive snapshots for routine local state changes.

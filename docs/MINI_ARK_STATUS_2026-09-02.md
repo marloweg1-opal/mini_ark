@@ -150,3 +150,22 @@ R: user-profile migration MVP is implemented and cleaned staging completed.
 - Files deleted: 0
 
 The 5 failures are unavailable OneDrive placeholder files. No profile roots were removed.
+
+## 2026-09-03 R: Profile Cleanup Update
+
+Approved reversible profile-source cleanup completed.
+
+- Command: `.\cleanup_r_user_profiles.ps1 -Execute -RemoveEmptyDirs`
+- Cleanup report: `C:\mini_ark\docs\R_PROFILE_CLEANUP_2026-09-03_115901.json`
+- Quarantine root: `R:\_ark_quarantine\R_Profile_Source_Removals_2026-09-03_115901`
+- Planned moves: 4999
+- Moved to quarantine: 4987
+- Skipped: 109
+- Failed: 12
+- Files permanently deleted: 0
+
+Remaining profile-source state:
+
+- `R:\Junior`: one `desktop.ini` residue file under `Documents`.
+- `R:\Downloads`: one `desktop.ini` residue file.
+- `R:\Users`: Windows/profile residue remains, including default profiles, AppData/system cache material, profile metadata, unavailable OneDrive placeholders, and access-denied public desktop shortcuts.
