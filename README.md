@@ -53,6 +53,29 @@ Current work focuses on conversational ingestion, memory classification, canon p
 
 Expect architecture changes, experiments, aggressively specific naming, and the occasional highly plausible piece of nonsense requiring verification.
 
+## Current MVP controls
+
+The current local MVP includes:
+
+- a Python CLI with a Windows wrapper: `ark.py` and `ark.cmd`
+- a local cockpit page: `index.html`
+- a user guide and handoff docs under `docs/`
+- read-only inventory, diagnosis, reporting, and classification commands
+- approval-gated proposal/apply/undo workflows
+- CareBloomOS copy-first consolidation and archive/deletion-review staging
+- R: user-profile migration staging and hierarchy reports
+
+Typical local launch:
+
+```powershell
+cd C:\mini_ark
+.\ark.cmd doctor
+.\ark.cmd brief
+powershell -ExecutionPolicy Bypass -File .\start_mini_ark.ps1
+```
+
+Safety posture: generated local ledgers, logs, maps, cache files, and handoff review packets are excluded from the GitHub archive unless explicitly reviewed for release.
+
 ## License
 
 mini_ark is licensed under the **Mozilla Public License 2.0 (MPL-2.0)**.

@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini ARK</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101114;
+      --surface: #181a1f;
+      --surface-2: #22262d;
+      --line: #373c45;
+      --text: #f3f1ea;
+      --muted: #b8bab3;
+      --cyan: #79d7d2;
+      --green: #8fce82;
+      --gold: #e2c15f;
+      --rose: #d98aa0;
+      --blue: #8eb3e6;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: linear-gradient(180deg, rgba(121, 215, 210, 0.08), transparent 260px), var(--bg);
+    }
+    .shell {
+      display: grid;
+      grid-template-columns: 235px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    aside {
+      border-right: 1px solid var(--line);
+      background: rgba(24, 26, 31, 0.94);
+      padding: 20px 16px;
+    }
+    main {
+      padding: 26px;
+      display: grid;
+      gap: 20px;
+      align-content: start;
+    }
+    h1, h2, h3, p { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 30px; font-weight: 600; }
+    h2 { font-size: 18px; font-weight: 600; margin-bottom: 12px; }
+    h3 { font-size: 15px; font-weight: 600; }
+    .brand { display: grid; gap: 4px; margin-bottom: 22px; }
+    .brand strong { font-size: 22px; font-weight: 600; }
+    .muted, .brand span, .card p, td { color: var(--muted); }
+    nav { display: grid; gap: 8px; }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      padding: 8px 10px;
+      border-radius: 6px;
+    }
+    nav a:hover { color: var(--text); background: var(--surface-2); }
+    .topbar {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
+      background: var(--surface-2);
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--cyan); }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .stat { min-height: 105px; display: grid; gap: 10px; align-content: space-between; }
+    .value { font-size: 24px; font-weight: 600; color: var(--text); }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(310px, 0.65fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .stack { display: grid; gap: 10px; }
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+    .row p { margin-top: 5px; line-height: 1.42; }
+    .tag {
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+      line-height: 1.1;
+      color: var(--bg);
+      background: var(--muted);
+      white-space: nowrap;
+    }
+    .active { background: var(--cyan); }
+    .ready { background: var(--green); }
+    .decision { background: var(--gold); }
+    .module { background: var(--blue); }
+    .warn { background: var(--rose); }
+    code {
+      color: var(--cyan);
+      overflow-wrap: anywhere;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th { color: var(--text); font-weight: 500; }
+    .focus { border-left: 3px solid var(--cyan); }
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stats, .layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 520px) {
+      main { padding: 18px; }
+      .row { grid-template-columns: 1fr; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <strong>Mini ARK</strong>
+        <span>C:\mini_ark</span>
+      </div>
+      <nav aria-label="Mini ARK sections">
+        <a href="#status">Status</a>
+        <a href="#commands">Commands</a>
+        <a href="#modules">Modules</a>
+        <a href="#schedule">Schedule</a>
+      </nav>
+    </aside>
+    <main>
+      <section class="topbar" id="status">
+        <div>
+          <h1>Project ARK Cockpit</h1>
+          <p class="muted">Mini ARK is running from its real home. CareBloomOS is a flagship module, not the whole map.</p>
+        </div>
+        <div class="toolbar">
+          <button type="button" data-copy=".\ark.cmd doctor">Copy doctor</button>
+          <button type="button" data-copy=".\ark.cmd brief">Copy brief</button>
+          <button type="button" data-copy=".\ark.cmd status R:\">Copy R status</button>
+          <button type="button" data-copy="powershell -ExecutionPolicy Bypass -File C:\mini_ark\start_mini_ark.ps1">Copy start</button>
+          <button type="button" data-copy=".\prep_architecture_correction.ps1 -Execute">Copy prep</button>
+          <button type="button" data-copy=".\consolidate_carebloom_assets.ps1">Copy CareBloom plan</button>
+          <button type="button" data-copy=".\map_carebloomos_archive.ps1 -Execute">Copy archive stage</button>
+          <button type="button" data-copy=".\migrate_r_user_profiles.ps1 -Execute">Copy profile stage</button>
+        </div>
+      </section>
+
+      <section class="stats" aria-label="Current state">
+        <article class="card stat">
+          <span class="muted">Engine</span>
+          <span class="value">Online</span>
+          <span class="tag active">CLI verified</span>
+        </article>
+        <article class="card stat">
+          <span class="muted">Ledger</span>
+          <span class="value">Ready</span>
+          <span class="tag ready">schema v1</span>
+        </article>
+        <article class="card stat">
+          <span class="muted">Handoffs</span>
+          <span class="value">6</span>
+          <span class="tag decision">review</span>
+        </article>
+        <article class="card stat">
+          <span class="muted">Proposals</span>
+          <span class="value">8</span>
+          <span class="tag decision">pending</span>
+        </article>
+      </section>
+
+      <section class="layout">
+        <div class="card" id="commands">
+          <h2>Command Surface</h2>
+          <div class="stack">
+            <article class="row focus">
+              <div>
+                <h3>Health check</h3>
+                <p>Checks ledger, schema, scan history, uniqueness, handoffs, and open loops.</p>
+                <p><code>.\ark.cmd doctor</code></p>
+              </div>
+              <span class="tag active">safe</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>Current brief</h3>
+                <p>Shows unreconciled events, open loops, and pending proposals.</p>
+                <p><code>.\ark.cmd brief</code></p>
+              </div>
+              <span class="tag active">safe</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>Scoped status</h3>
+                <p>Shows what Mini ARK knows about a path without changing project files.</p>
+                <p><code>.\ark.cmd status R:\</code></p>
+              </div>
+              <span class="tag active">safe</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>User guide</h3>
+                <p>Open the handbook for plain-language workflows and command meaning.</p>
+                <p><a href="docs/USER_GUIDE.md"><code>docs\USER_GUIDE.md</code></a></p>
+              </div>
+              <span class="tag ready">guide</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>One-step architecture prep</h3>
+                <p>Reserves known bleed paths, skips protected proposal items, refreshes brief, and writes a report.</p>
+                <p><code>.\prep_architecture_correction.ps1 -Execute</code></p>
+              </div>
+              <span class="tag decision">ledger only</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>CareBloom consolidation MVP</h3>
+                <p>Plans or runs copy-first consolidation without stopping Rainmeter or Wallpaper Engine.</p>
+                <p><code>.\consolidate_carebloom_assets.ps1</code></p>
+              </div>
+              <span class="tag active">plan first</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>CareBloomOS archive map</h3>
+                <p>Stages non-dependent CareBloomOS assets into RuneScript buckets, including a 60-day deletion-review lane.</p>
+                <p><code>.\map_carebloomos_archive.ps1 -Execute</code></p>
+              </div>
+              <span class="tag decision">copies only</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>R profile migration</h3>
+                <p>Classifies old user-profile roots, stages cleaned copies, and writes an R: hierarchy report.</p>
+                <p><code>.\migrate_r_user_profiles.ps1 -Execute</code></p>
+              </div>
+              <span class="tag decision">review</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>Mutation controls</h3>
+                <p>Approve/apply/undo remain CLI-only and approval-gated. Use preview before any apply.</p>
+                <p><code>.\ark.cmd apply PROPOSAL_ID --preview</code></p>
+              </div>
+              <span class="tag warn">gated</span>
+            </article>
+          </div>
+        </div>
+
+        <aside class="card">
+          <h2>Safety Line</h2>
+          <div class="stack">
+            <article class="row">
+              <div>
+                <h3>Emergency stop</h3>
+                <p>Create this flag to block mutations.</p>
+                <p><code>C:\mini_ark\ARK_EXECUTION_DISABLED.flag</code></p>
+              </div>
+              <span class="tag ready">available</span>
+            </article>
+            <article class="row">
+              <div>
+                <h3>No cleanup by default</h3>
+                <p>Mini ARK can observe, report, propose, and preview before changing files.</p>
+              </div>
+              <span class="tag active">policy</span>
+            </article>
+          </div>
+        </aside>
+      </section>
+
+      <section class="card" id="modules">
+        <h2>ARK Map</h2>
+        <div class="stack">
+          <article class="row focus">
+            <div>
+              <h3>Project ARK</h3>
+              <p>Parent continuity and operating system.</p>
+              <p><code>R:\Ark</code></p>
+            </div>
+            <span class="tag active">parent</span>
+          </article>
+          <article class="row">
+            <div>
+              <h3>Mini ARK</h3>
+              <p>Running cockpit, ledger, scanner, classifier, handoff review, and proposal machinery.</p>
+              <p><code>C:\mini_ark</code></p>
+            </div>
+            <span class="tag active">home</span>
+          </article>
+          <article class="row">
+            <div>
+              <h3>CareBloomOS</h3>
+              <p>Flagship subsystem within ARK. Keep it important; keep it contained.</p>
+              <p><code>R:\Projects\CareBloomOS</code> -> <code>R:\RuneScript\Projects\CareBloomOS</code></p>
+            </div>
+            <span class="tag module">module</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="card" id="schedule">
+        <h2>Next Implementation Schedule</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Order</th>
+              <th>Work</th>
+              <th>ETA</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Review archive-map manifests and dependency holds before any deletion discussion.</td>
+              <td>30-45 min</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Optionally approve Rainmeter/Wallpaper text reference updates after copy verification.</td>
+              <td>20-40 min</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Review 6 handoff files and mark current/redundant/needs-user-decision.</td>
+              <td>45-75 min</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Prepare GitHub archival after privacy review and release-note cleanup.</td>
+              <td>45-60 min</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <script>
+    const live = document.createElement("span");
+    live.className = "muted";
+    live.setAttribute("aria-live", "polite");
+    document.querySelector(".toolbar").appendChild(live);
+
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const value = button.getAttribute("data-copy");
+        try {
+          await navigator.clipboard.writeText(value);
+          live.textContent = "Copied.";
+        } catch {
+          live.textContent = value;
+        }
+      });
+    });
+  </script>
+</body>
+</html>
