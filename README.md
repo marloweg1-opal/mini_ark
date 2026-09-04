@@ -84,7 +84,7 @@ See [`LICENSE`](LICENSE) for the complete license terms.
 
 ## Maintainer
 
-Created and maintained by **Marlowe Fitzgerald Gilmore Jr.**
+Created and maintained by **Junior Gilmore**
 
 Developed with material collaboration from **OpenAI / ChatGPT**, with AI assistance credited openly rather than absorbed into anonymous authorship.
 
