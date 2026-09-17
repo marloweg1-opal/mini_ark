@@ -1,14 +1,9 @@
 """
-Mini ARK pruning -- finds folders that "lead to nothing" (contain no
-files anywhere in their subtree) and proposes them for quarantine.
+Mini ARK pruning -- observes empty branches for retirement review.
 
 Constitutional constraint, same as organizer.py: this module NEVER
 deletes or moves anything itself. It only writes proposals + per-file
-proposal_items with requested_mode='quarantine'. A human reviews the
-itemized list (list-items), skips whatever they want kept
-(skip-item), approves, and only then does apply() touch the disk --
-and even then, quarantine is a move to a holding area, never a true
-delete (see core/quarantine.py).
+findings. Emptiness alone never produces executable quarantine items.
 
 Reserved folders (registered via apply.add_reservation) are treated
 as occupied, never as candidates -- and because protection is
@@ -65,10 +60,7 @@ def find_empty_branches(conn, root_path: str) -> list:
 
 def propose_prune(conn, root_path: str, project_id: int = None) -> dict:
     """
-    Read-only analysis + PROPOSAL only. Writes one 'decision'-severity
-    proposal plus one proposal_item per dead-end folder found, each
-    defaulted to requested_mode='quarantine'. Nothing is deleted here
-    or anywhere upstream of an explicit approve + apply.
+    Write a review proposal and findings, with no executable action items.
     """
     candidates = find_empty_branches(conn, root_path)
 
@@ -76,11 +68,9 @@ def propose_prune(conn, root_path: str, project_id: int = None) -> dict:
         return {"status": "no_data", "message": "No empty folder branches found under this root."}
 
     description = (
-        f"Found {len(candidates)} folder(s) that lead to nothing (no files "
-        f"anywhere in their subtree). Review each with 'ark list-items', "
-        f"skip anything you want kept with 'ark skip-item <item_id>', then "
-        f"approve + apply. Quarantine is reversible within the grace period "
-        f"-- nothing is permanently deleted by this."
+        f"Review {len(candidates)} apparently empty folder branches. "
+        "Emptiness does not establish retirement; folders may be active scaffolding or application state. "
+        "No executable quarantine items are generated. Retirement and dependency evidence are required."
     )
     cur = conn.execute(
         """INSERT INTO proposals (description, project_id, severity, batch_key, status)
@@ -89,13 +79,11 @@ def propose_prune(conn, root_path: str, project_id: int = None) -> dict:
     )
     proposal_id = cur.lastrowid
 
+    import json
     for c in candidates:
-        conn.execute(
-            """INSERT INTO proposal_items
-               (proposal_id, canonical_path, dest_path, requested_mode)
-               VALUES (?, ?, NULL, 'quarantine');""",
-            (proposal_id, c["path"]),
-        )
+        conn.execute("""INSERT INTO stewardship_findings(finding_type,path,status,reason,evidence_json,recommended_action,resolution_strategy)
+                        VALUES('empty_branch',?,'open',?,?,'review_retirement','REVIEW')""",
+                     (c["path"], "Observed empty; retirement is unknown", json.dumps({"observation": c,"legacy_proposal_id":proposal_id,"retirement_evidence":None})))
     conn.commit()
 
     return {
@@ -103,5 +91,5 @@ def propose_prune(conn, root_path: str, project_id: int = None) -> dict:
         "proposal_id": proposal_id,
         "empty_folders_found": len(candidates),
         "candidates": candidates,
-        "note": "NOTHING was deleted. Review with 'ark list-items " + str(proposal_id) + "'.",
+        "note": "Review observations are stored in stewardship_findings. No quarantine action is authorized or executable.",
     }

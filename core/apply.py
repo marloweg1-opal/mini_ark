@@ -27,12 +27,15 @@ Safety order, enforced before ANY disk write, in this sequence:
 """
 
 import os
+import json
 import platform
 import shutil
 from pathlib import Path
 
 from core import journal
+from core.recovery_inspection import file_identity
 from core import quarantine
+from core.action_evidence import quarantine_hold
 from core.circuit_breaker import check_operation_magnitude, OperationTooLarge
 
 # Non-negotiable floor. Editable rows in protected_paths can ADD to
@@ -259,25 +262,20 @@ def plan_apply(conn, proposal_id: int) -> dict:
         if actual_mode == "move":
             dependents = get_active_dependents(conn, item["canonical_path"])
             if dependents:
-                actual_mode = "shortcut"
+                plan.append({"item_id": item["id"], "path": item["canonical_path"],
+                             "action": "blocked", "reason": "Active dependencies require a new reviewed resolution; move approval does not authorize a shortcut."})
                 lines = [f"  - {d['program_name']} references this at "
                          f"{d['reference_location']}: \"{d['reference_context']}\""
                          for d in dependents]
                 downgrade_report_lines.append(
                     f"{item['canonical_path']} -> {item['dest_path']}:\n" + "\n".join(lines)
                 )
+                continue
 
         elif actual_mode == "quarantine":
-            dependents = get_active_dependents(conn, item["canonical_path"])
-            if dependents:
-                # No sensible fallback for a delete -- unlike 'move' this
-                # can't downgrade to something safer, so it's a hard block.
-                lines = [f"{d['program_name']} references this at {d['reference_location']}"
-                         for d in dependents]
-                plan.append({"item_id": item["id"], "path": item["canonical_path"],
-                             "action": "blocked",
-                             "reason": "Has active dependent(s), cannot quarantine: " + "; ".join(lines)})
-                continue
+            plan.append({"item_id": item["id"], "path": item["canonical_path"],
+                         "action": "blocked", "reason": quarantine_hold()})
+            continue
 
         plan.append({"item_id": item["id"], "path": item["canonical_path"],
                      "dest": item["dest_path"], "action": actual_mode})
@@ -285,7 +283,7 @@ def plan_apply(conn, proposal_id: int) -> dict:
     if downgrade_report_lines:
         report_body = (
             "The following files were requested as real MOVES but have known "
-            "dependents, so they were auto-downgraded to shortcuts instead. "
+            "dependents, so they were blocked without changing the approved semantics. "
             "To actually relocate them, update the referencing config(s) first, "
             "then re-request the move:\n\n" + "\n\n".join(downgrade_report_lines)
         )
@@ -360,9 +358,35 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
 
     for entry in to_apply:
         item = conn.execute("SELECT * FROM proposal_items WHERE id = ?;", (entry["item_id"],)).fetchone()
+        if item is None:
+            failed.append({"path": None, "reason": "Proposal item no longer exists"})
+            continue
+        proposal = conn.execute("SELECT status FROM proposals WHERE id=?", (item["proposal_id"],)).fetchone()
+        if item['action_log_id'] is not None:
+            failed.append({'path': item['canonical_path'], 'reason': 'Prior execution receipt exists; inspect recovery before retrying'})
+            continue
+        if not proposal or proposal["status"] != "approved" or item["status"] != "pending" or entry["action"] != item["requested_mode"]:
+            failed.append({"path": item["canonical_path"], "reason": "Approval or item semantics changed; fresh review required"})
+            continue
         source = Path(item["canonical_path"])
         dest = Path(item["dest_path"]) if item["dest_path"] else None
         action = entry["action"]
+        if dest is not None and os.path.lexists(dest):
+            failed.append({'path': str(source), 'reason': 'Destination occupied; no overwrite or implicit directory nesting permitted'})
+            continue
+        protection = is_protected(conn, str(source))
+        dependencies = get_active_dependents(conn, str(source))
+        if protection or (dependencies and action in {"move", "quarantine"}):
+            failed.append({"path": str(source), "reason": protection or "Active dependencies require fresh review"})
+            continue
+        if action == "quarantine":
+            failed.append({"path": str(source), "reason": quarantine_hold()})
+            continue
+
+        identity = file_identity(source) if action == 'move' else None
+        if action == 'move' and identity is None:
+            failed.append({'path':str(source), 'reason':'Stable regular-file identity unavailable; move requires review'})
+            continue
 
         preview = journal.preview_operation(
             conn, action_type=f"file_{action}", tier=tier, target_path=str(source),
@@ -371,7 +395,8 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
 
         try:
             op_id = journal.begin_transaction(
-                conn, preview, previous_state={"path": str(source), "existed": source.exists()},
+                conn, preview, previous_state={"path": str(source), "existed": source.exists(), 'identity':identity},
+                proposal_item_id=item['id'],
             )
         except journal.ExecutionDisabled as e:
             return {"status": "blocked_by_kill_switch", "reason": str(e),
@@ -398,7 +423,12 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
                 )
                 verified = dest.exists() and not source.exists()
 
-            journal.complete_operation(conn, op_id, new_state={"path": str(dest)}, verified=verified)
+            destination_identity = file_identity(dest) if action == 'move' else None
+            if action == 'move':
+                verified = verified and destination_identity is not None and destination_identity['sha256'] == identity['sha256']
+            journal.complete_operation(conn, op_id, new_state={"path": str(dest), 'identity':destination_identity}, verified=verified)
+            if not verified:
+                raise RuntimeError("Filesystem result did not verify; manual recovery required")
             conn.execute(
                 "UPDATE proposal_items SET status='applied', resolved_mode=?, action_log_id=?, resolved_at=datetime('now') WHERE id=?;",
                 (action, op_id, item["id"]),
@@ -409,8 +439,10 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
                 print(f"[APPLIED] {action}: {source} -> {dest}")
 
         except Exception as e:
+            conn.execute("UPDATE action_log SET status='manual_recovery_required', new_state=? WHERE id=?",
+                         (json.dumps({"path":str(dest) if dest else None,"error":str(e)}),op_id))
             conn.execute(
-                "UPDATE proposal_items SET status='skipped', block_reason=? WHERE id=?;",
+                "UPDATE proposal_items SET status='blocked', block_reason=? WHERE id=?;",
                 (f"{type(e).__name__}: {e}", item["id"]),
             )
             conn.commit()
@@ -442,6 +474,12 @@ def undo_apply(conn, op_id: int) -> dict:
         return {"status": "failed", "reason": "not_found"}
 
     action = row["action_type"]  # 'file_move' or 'file_shortcut'
+    if action != 'file_move':
+        evidence = {'reason':'No current identity-bound reversal contract for this operation type',
+                    'action_type':action, 'physical_changes':False}
+        journal.record_recovery(conn, op_id, 'UNDO_REQUIRES_REVIEW', evidence)
+        conn.commit()
+        return {'status':'UNDO_REQUIRES_REVIEW', 'evidence':evidence}
 
     def _reverse(previous_state: dict):
         import json as _json
@@ -452,10 +490,32 @@ def undo_apply(conn, op_id: int) -> dict:
         if action == "file_shortcut":
             _remove_shortcut(current_path)
         elif action == "file_move":
+            if os.path.lexists(original_path):
+                occupant = original_path.lstat()
+                raise journal.UndoConflict({'reason': 'Original path is occupied; occupant was not modified',
+                    'original_path': str(original_path), 'current_path': str(current_path),
+                    'occupant': {'size': occupant.st_size, 'mtime_ns': occupant.st_mtime_ns,
+                                 'inode': occupant.st_ino, 'mode': occupant.st_mode},
+                    'physical_changes': False})
             if not current_path.exists():
                 raise FileNotFoundError(f"Cannot undo move: {current_path} no longer exists.")
-            original_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(current_path), str(original_path))
+            if not new_state.get('identity') or file_identity(current_path) != new_state['identity']:
+                raise journal.UndoConflict({'reason':'Moved object changed or lacks identity evidence; no automatic undo',
+                    'original_path':str(original_path), 'current_path':str(current_path), 'physical_changes':False})
+            if platform.system() != 'Windows':
+                raise RuntimeError('No verified no-replace undo primitive on this platform')
+            if not original_path.parent.is_dir():
+                raise journal.UndoConflict({'reason':'Original parent is unavailable; no folders recreated automatically',
+                    'original_path':str(original_path), 'current_path':str(current_path), 'physical_changes':False})
+            # Windows rename refuses an occupied destination atomically. Cross-volume
+            # undo is held rather than falling back to a potentially overwriting copy.
+            try:
+                os.rename(current_path, original_path)
+            except FileExistsError:
+                raise journal.UndoConflict({'reason':'Original path became occupied during undo; no overwrite',
+                    'original_path':str(original_path), 'current_path':str(current_path), 'physical_changes':False})
+            if file_identity(original_path) != new_state['identity'] or os.path.lexists(current_path):
+                raise RuntimeError('Undo physical result could not be verified')
             conn.execute("UPDATE files SET canonical_path = ? WHERE canonical_path = ?;",
                          (str(original_path), str(current_path)))
             conn.commit()

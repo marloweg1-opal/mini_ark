@@ -40,7 +40,7 @@ class ClassifyPathTests(unittest.TestCase):
         result = classify_path(r"R:\Projects\CareBloomOS\Assets\moonstone_badge.png")
 
         self.assertEqual(result["bucket"], "RuneScript/Projects/CareBloomOS")
-        self.assertEqual(result["confidence"], "Confirmed")
+        self.assertEqual(result["confidence"], "Strongly_inferred")
         self.assertEqual(result["lifecycle_class"], LIFECYCLE_PROJECT)
         self.assertEqual(result["subject_type"], "project_asset")
 

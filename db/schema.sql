@@ -228,6 +228,142 @@ CREATE TABLE IF NOT EXISTS file_dependents (
     detected_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Stewardship identity records. Paths are not identity: a path can
+-- change, while a filesystem object, content fingerprint, metadata
+-- fingerprint, or logical asset family may persist.
+CREATE TABLE IF NOT EXISTS stewardship_file_identities (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    current_path           TEXT NOT NULL,
+    normalized_path        TEXT NOT NULL,
+    filesystem_object_id   TEXT,
+    volume_identity        TEXT,
+    content_fingerprint    TEXT,
+    metadata_fingerprint   TEXT,
+    logical_asset_id       TEXT,
+    identity_confidence    REAL,
+    first_seen_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(normalized_path)
+);
+
+-- Gate A simulation run identity. Shadow Mode may write Mini ARK
+-- evidence, findings, proposals, and reports, but it must not mutate
+-- managed filesystem content.
+CREATE TABLE IF NOT EXISTS shadow_runs (
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at                   TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at                 TEXT,
+    scope                        TEXT NOT NULL,
+    architecture_policy_version  INTEGER,
+    classifier_version           INTEGER,
+    placement_policy_version     INTEGER,
+    inventory_generation         TEXT,
+    status                       TEXT NOT NULL DEFAULT 'running', -- running | complete | failed | interrupted
+    files_examined               INTEGER DEFAULT 0,
+    files_implicated             INTEGER DEFAULT 0,
+    review_families              INTEGER DEFAULT 0,
+    estimated_human_decisions    INTEGER DEFAULT 0,
+    summary_json                 TEXT,
+    report_path                  TEXT,
+    evidence_path                TEXT
+);
+
+-- Finding: something Mini ARK observed. This is not a proposal, not
+-- authorization, and not proof that anything physically happened.
+CREATE TABLE IF NOT EXISTS stewardship_findings (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    shadow_run_id       INTEGER REFERENCES shadow_runs(id),
+    finding_type        TEXT NOT NULL,
+    subject_type        TEXT,
+    path                TEXT,
+    classification      TEXT,
+    placement_status    TEXT,
+    status              TEXT NOT NULL DEFAULT 'open',  -- open | proposed | dismissed | resolved
+    reason              TEXT,
+    confidence          REAL,
+    risk                TEXT,
+    evidence_json       TEXT,
+    references_json     TEXT,
+    dependents_json     TEXT,
+    recommended_action  TEXT,
+    source_id           INTEGER REFERENCES sources(id),
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at         TEXT
+);
+
+-- Stewardship proposal: what Mini ARK recommends. This table is
+-- intentionally separate from findings and operations so "thought it
+-- should happen" never becomes indistinguishable from "did happen."
+CREATE TABLE IF NOT EXISTS stewardship_proposals (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    shadow_run_id        INTEGER REFERENCES shadow_runs(id),
+    finding_id           INTEGER REFERENCES stewardship_findings(id),
+    capability_id        TEXT,
+    owner                TEXT,
+    domain               TEXT,
+    operation            TEXT,
+    description          TEXT NOT NULL,
+    proposed_action      TEXT NOT NULL,
+    subject_count        INTEGER DEFAULT 1,
+    confidence           REAL,
+    risk                 TEXT,
+    approval_required    INTEGER NOT NULL DEFAULT 1,
+    preview_available    INTEGER NOT NULL DEFAULT 0,
+    undo_available       INTEGER NOT NULL DEFAULT 0,
+    status               TEXT NOT NULL DEFAULT 'pending', -- pending | reviewed | approved | rejected | superseded
+    review_group_key     TEXT,
+    review_cost          INTEGER DEFAULT 1,
+    proof                TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at          TEXT
+);
+
+-- Stewardship operation: what Mini ARK was authorized to attempt. It
+-- has a machine state so interrupted/crashed work can be resumed or
+-- explained from reality.
+CREATE TABLE IF NOT EXISTS stewardship_operations (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id          INTEGER REFERENCES stewardship_proposals(id),
+    capability_id        TEXT,
+    owner                TEXT,
+    domain               TEXT,
+    operation            TEXT,
+    state                TEXT NOT NULL DEFAULT 'PROPOSED',
+    commit_phase         TEXT NOT NULL DEFAULT 'PLANNED',
+    batch_key            TEXT,
+    batch_index          INTEGER,
+    batch_total          INTEGER,
+    idempotency_key      TEXT,
+    expected_state_json  TEXT,
+    actual_state_json    TEXT,
+    reason               TEXT,
+    confidence           REAL,
+    risk                 TEXT,
+    approval_proof       TEXT,
+    preview_proof        TEXT,
+    verification_proof   TEXT,
+    undo_proof           TEXT,
+    started_at           TEXT,
+    completed_at         TEXT,
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(idempotency_key)
+);
+
+-- Stewardship event: what physically happened while an operation ran.
+-- Events are append-only operational evidence.
+CREATE TABLE IF NOT EXISTS stewardship_operation_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id         INTEGER NOT NULL REFERENCES stewardship_operations(id),
+    event_type           TEXT NOT NULL,
+    commit_phase         TEXT,
+    path                 TEXT,
+    previous_state_json  TEXT,
+    new_state_json       TEXT,
+    status               TEXT NOT NULL DEFAULT 'observed',
+    proof                TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Hard floor of paths apply() will never move or shortcut-replace,
 -- regardless of any proposal, mode request, or permission tier.
 -- Table is editable/extendable, but critical Windows system paths are

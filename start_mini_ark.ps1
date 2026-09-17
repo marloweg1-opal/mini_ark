@@ -1,5 +1,5 @@
 param(
-  [int]$PreferredPort = 8787,
+  [int]$PreferredPort = 8788,
   [switch]$Open
 )
 
@@ -7,10 +7,25 @@ $ErrorActionPreference = 'Stop'
 
 $miniArkRoot = 'C:\mini_ark'
 $indexPath = Join-Path $miniArkRoot 'index.html'
+$serverPath = Join-Path $miniArkRoot 'mini_ark_server.py'
 $runtimeRoot = Join-Path $miniArkRoot 'logs'
+
+try {
+  $running = Invoke-RestMethod -Uri "http://127.0.0.1:$PreferredPort/api/status" -TimeoutSec 2
+  if ($running.db -and $running.state) {
+    $existingUrl = "http://127.0.0.1:$PreferredPort/"
+    Write-Host "Mini ARK is already running: $existingUrl"
+    if ($Open) { Start-Process $existingUrl }
+    return
+  }
+} catch { }
 
 if (-not (Test-Path -LiteralPath $indexPath)) {
   throw "Mini ARK cockpit not found: $indexPath"
+}
+
+if (-not (Test-Path -LiteralPath $serverPath)) {
+  throw "Mini ARK server not found: $serverPath"
 }
 
 function Test-PortAvailable {
@@ -27,11 +42,14 @@ function Test-PortAvailable {
 }
 
 function Get-PythonCommand {
+  $knownPython = 'C:\Users\Junior\AppData\Local\Python\pythoncore-3.14-64\python.exe'
+  if (Test-Path -LiteralPath $knownPython) { return @{ File = $knownPython; Args = @($serverPath) } }
+
   $python = Get-Command python -ErrorAction SilentlyContinue
-  if ($python) { return @{ File = $python.Source; Args = @('-m', 'http.server') } }
+  if ($python) { return @{ File = $python.Source; Args = @($serverPath) } }
 
   $py = Get-Command py -ErrorAction SilentlyContinue
-  if ($py) { return @{ File = $py.Source; Args = @('-3', '-m', 'http.server') } }
+  if ($py) { return @{ File = $py.Source; Args = @('-3', $serverPath) } }
 
   return $null
 }

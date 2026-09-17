@@ -1,5 +1,11 @@
 # Mini ARK User Guide
 
+For the operator handbook, start with:
+
+```text
+C:\mini_ark\docs\HANDBOOK.md
+```
+
 Mini ARK lives at:
 
 ```text

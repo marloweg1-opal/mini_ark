@@ -29,3 +29,8 @@ tests/fixtures/*.json
 
 handoffs_inbox/*.review.json
 ARK_EXECUTION_DISABLED.flag
+
+# Private recovery evidence, inventories, and local runtime state never publish.
+private/
+*.sqlite
+docs/SHADOW_RUN_*.md

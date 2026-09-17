@@ -119,12 +119,12 @@ def _contains_any(parts_lower: list[str], joined: str, signals: set[str]) -> str
 
 
 def _known_project(parts_lower: list[str], joined: str) -> tuple[str, str] | tuple[None, None]:
-    for part in parts_lower:
-        for key, project in _KNOWN_PROJECTS.items():
-            if key == part or key in part:
-                return project, part
+    # Nearest explicit project directory outranks a containing platform name.
+    for part in reversed(parts_lower[:-1]):
+        if part in _KNOWN_PROJECTS:
+            return _KNOWN_PROJECTS[part], part
     for key, project in _KNOWN_PROJECTS.items():
-        if key in joined:
+        if re.search(r"(?<![a-z0-9])" + re.escape(key) + r"(?![a-z0-9])", joined):
             return project, key
     return None, None
 
@@ -200,7 +200,7 @@ def classify_path(path: str) -> dict:
         if context_signal or ext in _SCRIPT_EXTENSIONS:
             owner = project or ("CareBloomOS" if _contains_any(parts_lower, joined, _CAREBLOOM_OWNER_SIGNALS) else "Unknown")
             bucket = f"RuneScript/Projects/{project}" if project else "System_Records/Mini_ARK_Manifests"
-            confidence = CONFIRMED if project else STRONGLY_INFERRED
+            confidence = STRONGLY_INFERRED
             return _base_result(
                 bucket,
                 confidence,
@@ -217,7 +217,7 @@ def classify_path(path: str) -> dict:
         subject = "project_asset" if media_bucket else "project_material"
         return _base_result(
             f"RuneScript/Projects/{project}",
-            CONFIRMED,
+            STRONGLY_INFERRED,
             f"path signal '{project_signal}' identifies known project '{project}'; extension remains supporting evidence only",
             owner=project,
             lifecycle_class=LIFECYCLE_PROJECT,

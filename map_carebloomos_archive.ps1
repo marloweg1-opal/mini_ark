@@ -2,7 +2,7 @@ param(
   [switch]$Execute,
   [int]$OlderThanDays = 60,
   [int]$Limit = 0,
-  [string]$TargetRoot = 'R:\RuneScript\Projects\CareBloomOS'
+  [string]$TargetRoot = 'R:\Projects\CareBloomOS'
 )
 
 $ErrorActionPreference = 'Stop'

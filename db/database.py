@@ -19,6 +19,16 @@ def get_connection(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def get_readonly_connection(db_path: str) -> sqlite3.Connection:
+    """Open an existing Mini ARK ledger for observation-only commands."""
+    path = Path(db_path).resolve()
+    uri = path.as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON;")
+    return conn
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     """Apply schema.sql. Safe to run repeatedly (all statements are IF NOT EXISTS)."""
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
@@ -45,6 +55,18 @@ _RETROFIT_COLUMNS = {
     ],
     "protected_paths": [
         ("category", "TEXT NOT NULL DEFAULT 'user_reserved'"),
+    ],
+    "stewardship_findings": [
+        ("shadow_run_id", "INTEGER REFERENCES shadow_runs(id)"),
+        ("resolution_strategy", "TEXT"),
+        ("evidence_source", "TEXT"),
+        ("lifecycle_posture", "TEXT"),
+        ("attention_posture", "TEXT"),
+        ("confidence_dimensions_json", "TEXT"),
+    ],
+    "stewardship_proposals": [
+        ("shadow_run_id", "INTEGER REFERENCES shadow_runs(id)"),
+        ("resolution_strategy", "TEXT"),
     ],
 }
 

@@ -24,7 +24,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from db.database import get_connection, initialize_schema, migrate_schema, get_schema_version, record_source
+from db.database import get_connection, get_readonly_connection, initialize_schema, migrate_schema, get_schema_version, record_source
 from scanner.scanner import scan_path
 from core.journal import check_kill_switch, ExecutionDisabled, undo_operation, KILL_SWITCH_FLAG
 from core.graduation import check_phase2_scanner, print_graduation_report
@@ -40,6 +40,15 @@ from core import conversation_ingest
 from core import renaming
 from core import carebloom_consolidation
 from core import profile_migration
+from core import naming
+from core import date_index
+from core import placement
+from core import stewardship_contract
+from core import shadow
+from core import expression_slots
+from core.photo_taxonomy import taxonomy_summary
+from core.receipts import list_receipts
+from core.token_registry import ensure_token_registry, resolve_token, registry_path, route_summary, token_summary
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -402,8 +411,7 @@ def cmd_brief(args):
         print("[FAILED] No ledger found yet. Run 'ark bootstrap' first.")
         return
 
-    conn = get_connection(cfg["db_path"])
-    initialize_schema(conn)
+    conn = get_readonly_connection(cfg["db_path"])
 
     print("MINI ARK BRIEF\n")
 
@@ -531,11 +539,8 @@ def cmd_find_empty(args):
         for c in result["candidates"]:
             extra = f" ({c['nested_empty_subfolders']} empty subfolder(s) nested inside)" if c["nested_empty_subfolders"] else ""
             print(f"    - {c['path']}{extra}")
-        print(f"\n  Proposal #{result['proposal_id']} created ({result['empty_folders_found']} item(s)).")
-        print(f"  Review:  python ark.py list-items {result['proposal_id']}")
-        print(f"  Skip one you want kept:  python ark.py skip-item <item_id>")
-        print(f"  Then:    python ark.py approve {result['proposal_id']}")
-        print(f"           python ark.py apply {result['proposal_id']} --preview")
+        print(f"\n  Review proposal #{result['proposal_id']} records {result['empty_folders_found']} observations.")
+        print("  No executable quarantine items created. Retirement and dependency evidence are still required.")
 
     conn.close()
 
@@ -721,6 +726,8 @@ def cmd_approve(args):
         print(f"[FAILED] No proposal with id {args.proposal_id}")
         sys.exit(1)
         return
+    if row["status"] not in {"pending", "approved"}:
+        raise ValueError(f"Proposal {args.proposal_id} is {row['status']}; generate a new proposal for new semantics.")
     conn.execute("UPDATE proposals SET status='approved', resolved_at=datetime('now') WHERE id=?;",
                  (args.proposal_id,))
     conn.commit()
@@ -739,6 +746,9 @@ def cmd_set_item_mode(args):
         print(f"[FAILED] No proposal_item with id {args.item_id}")
         sys.exit(1)
         return
+    proposal = conn.execute("SELECT status FROM proposals WHERE id=?", (row["proposal_id"],)).fetchone()
+    if proposal is None or proposal["status"] != "pending":
+        raise ValueError("Item modes can only change on a pending proposal. Create a new proposal to change previously approved semantics.")
     conn.execute("UPDATE proposal_items SET requested_mode=? WHERE id=?;", (args.mode, args.item_id))
     conn.commit()
     print(f"[SUCCESS] Item {args.item_id} ({row['canonical_path']}) requested_mode -> {args.mode}")
@@ -854,16 +864,64 @@ def cmd_undo(args):
         elif row["action_type"] == "case_drift_cleanup":
             result = casefix.undo_case_drift_cleanup(conn, args.op_id)
         else:
-            def _no_op_undo(previous_state):
-                # Pre-apply-era ops (or anything not a real filesystem
-                # action) have nothing to reverse on disk.
-                print("  (no filesystem action to reverse for this op type)")
-            result = undo_operation(conn, args.op_id, _no_op_undo)
+            result = {'status':'UNDO_REQUIRES_REVIEW', 'reason':'Unknown operation type has no verified reversal contract'}
     except ExecutionDisabled as e:
         print(str(e))
         sys.exit(1)
         return
     conn.close()
+
+
+    print(json.dumps(result, indent=2))
+    if result.get('status') not in {'reversed', 'already_reversed'}:
+        sys.exit(1)
+
+
+def cmd_receipts(args):
+    cfg = load_config()
+    conn = get_connection(cfg["db_path"])
+    initialize_schema(conn)
+    receipts = list_receipts(conn, limit=args.limit)
+    conn.close()
+
+    print("[SUCCESS] Corestone operation receipts")
+    if not receipts:
+        print("  No operations have been journaled yet.")
+        return
+    for receipt in receipts:
+        print(f"- {receipt['label']} {receipt['action_type']} [{receipt['status']}]")
+        print(f"  performed: {receipt['performed_at']}")
+        print(f"  target: {receipt['target_path']}")
+        before_keys = ", ".join(receipt["before"].get("keys", [])) or "none"
+        after_keys = ", ".join(receipt["after"].get("keys", [])) or "none"
+        print(f"  before snapshot: {before_keys}")
+        print(f"  after snapshot: {after_keys}")
+        if receipt["undo_available"]:
+            print(f"  undo: {receipt['undo_command']}")
+        elif receipt["reversed_at"]:
+            print(f"  reversed: {receipt['reversed_at']}")
+        else:
+            print("  undo: not available for this receipt state")
+
+
+def cmd_name_preview(args):
+    root = Path(__file__).parent
+    registry = ensure_token_registry(root)
+    previews = [
+        naming.preview_name(path, registry, role=args.role, project=args.project)
+        for path in args.paths
+    ]
+    print(json.dumps({"status": "preview_only", "count": len(previews), "previews": previews}, indent=2))
+
+
+def cmd_date_index(args):
+    docs_root = str(Path(__file__).parent / "docs")
+    result = date_index.build_date_index(args.path, docs_root, recursive=args.recursive, limit=args.limit)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_photo_taxonomy(args):
+    print(json.dumps(taxonomy_summary(), indent=2))
 
 
 def cmd_graduate(args):
@@ -1149,6 +1207,197 @@ def cmd_r_hierarchy_scan(args):
         print(f"  {item}")
 
 
+def cmd_tokens(args):
+    root = Path(__file__).parent
+    registry = ensure_token_registry(root)
+    if args.query:
+        resolved = resolve_token(registry, args.query)
+        if not resolved:
+            print(f"[INFO] No token matched: {args.query}")
+            print(f"  Registry: {registry_path(root)}")
+            return
+        token_id, token = resolved
+        print(json.dumps({"id": token_id, **token}, indent=2))
+        return
+
+    summary = token_summary(registry)
+    print("[SUCCESS] Corestone token registry ready")
+    print(f"  Registry: {registry_path(root)}")
+    print(f"  Tokens: {summary['token_count']}")
+    print("")
+    for token in summary["tokens"]:
+        aliases = ", ".join(token["aliases"]) if token["aliases"] else "none"
+        owns = ", ".join(token["owns"]) if token["owns"] else "none"
+        print(f"- {token['id']} ({token['display_name']}, {token['type']})")
+        print(f"  aliases: {aliases}")
+        print(f"  owns: {owns}")
+        if token["routes"]:
+            print("  routes:")
+            for name, route in token["routes"].items():
+                print(f"    {name}: {route}")
+        customization = token.get("customization", {})
+        if customization:
+            print("  customization:")
+            for name, value in customization.items():
+                print(f"    {name}: {value}")
+    print("")
+    print("Tokens are identity packets: aliases + capability ownership + routes + visual/surface preferences.")
+
+
+def cmd_routes(args):
+    root = Path(__file__).parent
+    registry = ensure_token_registry(root)
+    summary = route_summary(registry)
+    print("[SUCCESS] Corestone routing registry ready")
+    print(f"  Registry: {registry_path(root)}")
+    print(f"  Routed tokens: {summary['routed_token_count']}")
+    print(f"  Rule: {summary['rule']}")
+    if summary.get("routing_policy"):
+        print(f"  Routing policy: {summary['routing_policy']}")
+    print("")
+    for token in summary["tokens"]:
+        print(f"- {token['id']} ({token['display_name']}, {token['type']})")
+        routes = token.get("routes", {})
+        if routes:
+            print("  routes:")
+            for name, route in routes.items():
+                print(f"    {name}: {route}")
+        representations = token.get("representations", {})
+        if representations:
+            print("  representations:")
+            for name, value in representations.items():
+                print(f"    {name}: {value}")
+
+
+def cmd_placement(args):
+    root = Path(__file__).parent
+    if args.path:
+        result = placement.evaluate_placement(args.path, root=root)
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return
+        target = result.get("likely_canonical_placement") or {}
+        current = result.get("current_placement") or {}
+        print("[SUCCESS] Placement evaluation")
+        print(f"  Path: {result['path']}")
+        print(f"  State: {result['state']}")
+        print(f"  Confidence: {result['confidence']}")
+        print(f"  Current placement: {current.get('id', 'unmatched')} ({current.get('path', 'not in doctrine')})")
+        print(f"  Likely canonical placement: {target.get('id', 'unknown')} ({target.get('path', 'not inferred')})")
+        print(f"  Recommended action: {result['recommended_action']}")
+        print(f"  Reason: {result['reason']}")
+        print("  Changes: none; placement evaluation is read-only.")
+        return
+
+    summary = placement.doctrine_summary(root=root)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return
+    print("[SUCCESS] Canonical placement doctrine ready")
+    print(f"  Registry: {placement.doctrine_path(root)}")
+    print(f"  Locations: {summary['location_count']}")
+    print(f"  Rule: {summary['doctrine'].get('rule', '')}")
+    print("")
+    for location in summary["locations"]:
+        print(f"- {location['id']} :: {location['path']}")
+        print(f"  owner/domain: {location['owner']} / {location['domain']}")
+        print(f"  lifecycle: {location['lifecycle']}")
+        print(f"  protection: {location['protection_level']}")
+        print(f"  purpose: {location['purpose']}")
+
+
+def cmd_stewardship_contract(args):
+    root = Path(__file__).parent
+    if args.json:
+        print(json.dumps(stewardship_contract.contract_summary(root), indent=2))
+        return
+    summary = stewardship_contract.contract_summary(root)
+    print("[SUCCESS] Stewardship reliability contract ready")
+    print(f"  Registry: {stewardship_contract.contract_path(root)}")
+    print(f"  Identity layers: {', '.join(summary['identity_layers'])}")
+    print(f"  Record kinds: {', '.join(summary['record_kinds'].keys())}")
+    print(f"  Operation states: {len(summary['operation_states'])}")
+    print(f"  Commit phases: {', '.join(summary['commit_phases'])}")
+    print(f"  Protected default: {summary['protected_default']}")
+    print(f"  Shadow Mode required: {summary['shadow_mode']['required']}")
+    print(f"  Graduation gates: {' -> '.join(summary['graduation_gates'])}")
+
+
+def cmd_patrol_policy(args):
+    from core.patrol import initialize_patrol, record_policy, supersede_portal_proposals
+    conn = get_connection(load_config()["db_path"])
+    initialize_schema(conn)
+    initialize_patrol(conn)
+    try:
+        if args.retire_portals:
+            print(json.dumps({"superseded": supersede_portal_proposals(conn)}))
+        elif args.kind:
+            value = json.loads(args.value) if args.kind == "authority" else args.value
+            version = record_policy(conn, kind=args.kind, scope=args.scope, capability=args.capability, value=value, reason=args.reason or "")
+            print(json.dumps({"version": version}))
+        else:
+            print(json.dumps([dict(r) for r in conn.execute("SELECT * FROM patrol_policy_events ORDER BY id")], indent=2))
+    finally:
+        conn.close()
+
+
+def cmd_shadow(args):
+    from core.patrol_state import read_state
+    if not 1 <= args.cycles <= 20 or args.interval < 1:
+        raise ValueError('Patrol requires 1..20 cycles and interval >= 1 second')
+    cfg = load_config()
+    conn = get_connection(cfg["db_path"])
+    initialize_schema(conn)
+    if read_state(conn)['paused']:
+        conn.close()
+        print(json.dumps({'status': 'paused', 'managed_mutations': 0}))
+        return
+    docs_root = str(Path(__file__).parent / "docs")
+    if args.cycles > 1:
+        from core.patrol import run_patrol
+        try:
+            results = run_patrol(conn, scope=args.scope, docs_root=docs_root, cycles=args.cycles, interval=args.interval, limit=args.limit)
+            print(json.dumps(results, indent=2))
+        finally:
+            conn.close()
+        return
+    summary = shadow.run_shadow(
+        conn,
+        scope=args.scope,
+        docs_root=docs_root,
+        limit=args.limit,
+        verify_current=not args.no_verify_current,
+    )
+    conn.close()
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return
+    print(f"[RESULT] Shadow Run {summary['status']}; evidence: {summary['evidence_source']}")
+    print(f"  Shadow run: {summary['shadow_run_id']}")
+    print(f"  Scope: {summary['scope']}")
+    print(f"  Files examined: {summary['files_examined']}")
+    print(f"  Files implicated: {summary['files_implicated']}")
+    print(f"  Review families: {summary['review_families']}")
+    print(f"  Estimated human decisions: {summary['estimated_human_decisions']}")
+    print(f"  Managed file mutations: {summary['managed_file_mutations']}")
+    print(f"  Report: {summary['report_path']}")
+    print(f"  Evidence: {summary['evidence_path']}")
+
+
+def cmd_expression_slots(args):
+    root = Path(__file__).parent
+    summary = expression_slots.slot_summary(root)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return
+    print("[SUCCESS] Expression slot registry ready")
+    print(f"  Registry: {expression_slots.registry_path(root)}")
+    print(f"  Profile: {summary['profile_id']} v{summary['profile_version']}")
+    print(f"  Law: {summary['law']}")
+    for section, slots in summary["sections"].items():
+        print(f"  {section}: {len(slots)} slot(s)")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="ark", description="Mini ARK")
     sub = parser.add_subparsers(dest="command")
@@ -1168,6 +1417,36 @@ def main():
 
     sub.add_parser("brief", aliases=["br"], help="Summarize current state").set_defaults(func=cmd_brief)
     sub.add_parser("cockpit", aliases=["cp"], help="Show Mini ARK cockpit launch commands").set_defaults(func=cmd_cockpit)
+    tokens_p = sub.add_parser("tokens", aliases=["tok"], help="Show or resolve HEXSEED project/capability tokens")
+    tokens_p.add_argument("query", nargs="?", help="Token id, display name, or alias to resolve")
+    tokens_p.set_defaults(func=cmd_tokens)
+    sub.add_parser("routes", aliases=["rt"], help="Show HEXSEED canonical routes and project representations").set_defaults(func=cmd_routes)
+    placement_p = sub.add_parser("placement", aliases=["place"], help="Evaluate where a path belongs using the canonical HEXSEED placement doctrine")
+    placement_p.add_argument("path", nargs="?", help="File or folder path to evaluate. Omit to list the placement doctrine.")
+    placement_p.add_argument("--json", action="store_true", help="Print structured JSON.")
+    placement_p.set_defaults(func=cmd_placement)
+    contract_p = sub.add_parser("stewardship-contract", aliases=["contract"], help="Show the reliability contract for Mini ARK stewardship operations")
+    contract_p.add_argument("--json", action="store_true", help="Print structured JSON.")
+    contract_p.set_defaults(func=cmd_stewardship_contract)
+    policy_p = sub.add_parser("patrol-policy", help="Inspect or explicitly version scoped patrol policy")
+    policy_p.add_argument("--kind", choices=["lifecycle", "authority", "attention"])
+    policy_p.add_argument("--scope", default="C:\\")
+    policy_p.add_argument("--capability", default="*")
+    policy_p.add_argument("--value")
+    policy_p.add_argument("--reason")
+    policy_p.add_argument("--retire-portals", action="store_true")
+    policy_p.set_defaults(func=cmd_patrol_policy)
+    shadow_p = sub.add_parser("shadow", aliases=["sh", "patrol"], help="One bounded Shadow patrol with change comparison")
+    shadow_p.add_argument("--scope", required=True, help="Ledger scope to simulate, e.g. R:\\Projects\\CareBloomOS")
+    shadow_p.add_argument("--limit", type=int, default=500, help="Maximum files; bounded at 5000 (0 uses default 500)")
+    shadow_p.add_argument("--no-verify-current", action="store_true", help="Skip current filesystem stat checks for instability")
+    shadow_p.add_argument("--json", action="store_true", help="Print structured JSON summary")
+    shadow_p.add_argument("--cycles", type=int, default=1, help="Bounded patrol cycles, 1..20")
+    shadow_p.add_argument("--interval", type=float, default=30, help="Seconds between patrol cycles")
+    shadow_p.set_defaults(func=cmd_shadow)
+    expr_p = sub.add_parser("expression-slots", aliases=["slots"], help="Show the semantic UI expression slot registry")
+    expr_p.add_argument("--json", action="store_true", help="Print structured JSON")
+    expr_p.set_defaults(func=cmd_expression_slots)
     checkdupe_p = sub.add_parser("check-duplicates", aliases=["dupes"], help="Fast check: does 'files' actually enforce UNIQUE on canonical_path, and are there duplicate rows right now?")
     checkdupe_p.add_argument("--under", default=None)
     checkdupe_p.set_defaults(func=cmd_check_duplicates)
@@ -1272,6 +1551,20 @@ def main():
     undo_p = sub.add_parser("undo", aliases=["u"], help="Reverse a completed operation")
     undo_p.add_argument("op_id", type=int, help="Operation ID number")
     undo_p.set_defaults(func=cmd_undo)
+    receipts_p = sub.add_parser("receipts", aliases=["rcpt"], help="Show recent operation receipts and undo commands")
+    receipts_p.add_argument("--limit", type=int, default=10)
+    receipts_p.set_defaults(func=cmd_receipts)
+    name_p = sub.add_parser("name-preview", aliases=["np"], help="Preview Cloverstone canonical names without renaming files")
+    name_p.add_argument("paths", nargs="+")
+    name_p.add_argument("--role", default=None, help="Optional role token, e.g. care rail, wallpaper, vlc button")
+    name_p.add_argument("--project", default=None, help="Optional project/stone token, e.g. carebloomos, wishstone")
+    name_p.set_defaults(func=cmd_name_preview)
+    date_p = sub.add_parser("date-index", aliases=["di"], help="Save Cloverstone date/provenance records for files without modifying them")
+    date_p.add_argument("path")
+    date_p.add_argument("--recursive", action="store_true")
+    date_p.add_argument("--limit", type=int, default=200)
+    date_p.set_defaults(func=cmd_date_index)
+    sub.add_parser("photo-taxonomy", aliases=["pt"], help="Show photo slideshow themes and subcategories").set_defaults(func=cmd_photo_taxonomy)
 
     grad_p = sub.add_parser("graduate", aliases=["grad"], help="Run graduation checklist for a phase")
     grad_p.add_argument("phase", type=int, help="Phase number to check")
@@ -1317,7 +1610,7 @@ def main():
 
     cb_archive_p = sub.add_parser("carebloom-archive-map", aliases=["cbam"],
                                   help="Map/stage CareBloomOS assets into RuneScript project architecture and deletion-prep buckets")
-    cb_archive_p.add_argument("--target-root", default=r"R:\RuneScript\Projects\CareBloomOS",
+    cb_archive_p.add_argument("--target-root", default=r"R:\Projects\CareBloomOS",
                               help="Target RuneScript project architecture root")
     cb_archive_p.add_argument("--source-root", action="append", default=None,
                               help="CareBloom source root to map; repeatable. Defaults to known roots.")

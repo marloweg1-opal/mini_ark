@@ -118,10 +118,11 @@ def analyze_and_propose(conn, root_path: str, project_id: int = None,
     proposals_written = 0
     for category, paths in by_category.items():
         description = (
-            f"Suggest grouping {len(paths)} {category} file(s) under a "
-            f"'{category}' project-portal reference (shortcuts to canonical "
-            f"locations, per spec Section 7 -- files stay where they are; "
-            f"nothing physically moves)."
+            f"Placement resolution family: {len(paths)} {category} file(s). "
+            f"Do not default this to project-portal shortcuts. Decide whether "
+            f"the family should LEAVE, REFERENCE, MIGRATE, CANONICALIZE, "
+            f"DEPLOY, QUARANTINE, or REVIEW after checking canonical home and "
+            f"dependencies."
         )
         cur = conn.execute(
             """INSERT INTO proposals (description, project_id, severity, batch_key, status)
@@ -130,18 +131,9 @@ def analyze_and_propose(conn, root_path: str, project_id: int = None,
         )
         proposal_id = cur.lastrowid
 
-        # One proposal_item per file, so apply() has something concrete
-        # to walk once this proposal is approved. Default mode matches
-        # spec Section 7's default (shortcut) -- callers can change
-        # individual items' requested_mode to 'move' before approval.
-        for src_path in paths:
-            dest_path = str(Path(root_path) / category / Path(src_path).name)
-            conn.execute(
-                """INSERT INTO proposal_items
-                   (proposal_id, canonical_path, dest_path, requested_mode)
-                   VALUES (?, ?, ?, 'shortcut');""",
-                (proposal_id, src_path, dest_path),
-            )
+        # Broad extension groups are now family-level findings only. They do
+        # not create shortcut apply-items; concrete move/reference/quarantine
+        # rows should come from placement resolution after dependency checks.
         proposals_written += 1
 
     conn.commit()
@@ -287,37 +279,25 @@ def analyze_media_and_propose(conn, root_path: str, exclude_folders: list = None
         cur = conn.execute(
             """INSERT INTO proposals (description, project_id, severity, batch_key, status)
                VALUES (?, ?, 'notice', ?, 'pending');""",
-            (f"Suggest grouping {len(images)} image file(s) under 'Images/' "
-             f"(shortcuts, nothing physically moves).", project_id, batch_key),
+            (f"Placement resolution family: {len(images)} image file(s) under "
+             f"'Images/'. Do not default this to shortcuts; choose LEAVE, "
+             f"REFERENCE, MIGRATE, CANONICALIZE, DEPLOY, QUARANTINE, or REVIEW "
+             f"after canonical-home and dependency checks.",
+             project_id, batch_key),
         )
-        proposal_id = cur.lastrowid
-        for src_path in images:
-            dest_path = str(Path(root_path) / "Images" / Path(src_path).name)
-            conn.execute(
-                """INSERT INTO proposal_items
-                   (proposal_id, canonical_path, dest_path, requested_mode)
-                   VALUES (?, ?, ?, 'shortcut');""",
-                (proposal_id, src_path, dest_path),
-            )
         proposals_written += 1
 
     for bucket_label, paths in video_buckets.items():
         cur = conn.execute(
             """INSERT INTO proposals (description, project_id, severity, batch_key, status)
                VALUES (?, ?, 'notice', ?, 'pending');""",
-            (f"Suggest grouping {len(paths)} video file(s) under "
-             f"'Videos/{bucket_label}/' by real duration via ffprobe "
-             f"(shortcuts, nothing physically moves).", project_id, batch_key),
+            (f"Placement resolution family: {len(paths)} video file(s) under "
+             f"'Videos/{bucket_label}/' by real duration via ffprobe. Do not "
+             f"default this to shortcuts; choose LEAVE, REFERENCE, MIGRATE, "
+             f"CANONICALIZE, DEPLOY, QUARANTINE, or REVIEW after canonical-home "
+             f"and dependency checks.",
+             project_id, batch_key),
         )
-        proposal_id = cur.lastrowid
-        for src_path in paths:
-            dest_path = str(Path(root_path) / "Videos" / bucket_label / Path(src_path).name)
-            conn.execute(
-                """INSERT INTO proposal_items
-                   (proposal_id, canonical_path, dest_path, requested_mode)
-                   VALUES (?, ?, ?, 'shortcut');""",
-                (proposal_id, src_path, dest_path),
-            )
         proposals_written += 1
 
     if unprobeable:

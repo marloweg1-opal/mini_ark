@@ -398,14 +398,14 @@ def scan_r_hierarchy(root_path: str, docs_root: str, max_depth: int = 2) -> dict
         "entry_count": len(entries),
         "entries": sorted(entries, key=lambda item: item["name"].lower()),
         "suggested_hierarchy": [
-            r"R:\RuneScript",
-            r"R:\RuneScript\Projects",
-            r"R:\RuneScript\Projects\CareBloomOS",
+            r"R:\Projects",
+            r"R:\Projects\CareBloomOS",
             DEFAULT_TARGET_ROOT,
             r"R:\Media",
             r"R:\Library",
             r"R:\System_Records",
-            r"R:\Intake\Needs_Classification",
+            r"R:\In_Transit",
+            r"R:\In_Transit\En_Route",
             r"R:\_ark_quarantine",
         ],
     }

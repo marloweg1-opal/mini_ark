@@ -26,6 +26,21 @@ class ExecutionDisabled(Exception):
     pass
 
 
+class UndoConflict(Exception):
+    """Current reality conflicts with historical undo authority."""
+    def __init__(self, evidence):
+        self.evidence = evidence
+        super().__init__(evidence['reason'])
+
+
+def record_recovery(conn, op_id, state, evidence):
+    conn.execute('''CREATE TABLE IF NOT EXISTS operation_recovery_events (
+        id INTEGER PRIMARY KEY, operation_id INTEGER NOT NULL, state TEXT NOT NULL,
+        evidence_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))''')
+    conn.execute('INSERT INTO operation_recovery_events(operation_id,state,evidence_json) VALUES(?,?,?)',
+                 (op_id, state, json.dumps(evidence)))
+
+
 def check_kill_switch():
     """
     Hard external stop, per Amendment 1: 'the authority to stop Mini ARK
@@ -63,19 +78,28 @@ def preview_operation(conn, action_type: str, tier: int, target_path: str,
     }
 
 
-def begin_transaction(conn, preview: dict, previous_state: dict) -> int:
+def begin_transaction(conn, preview: dict, previous_state: dict, *, proposal_item_id=None) -> int:
     """
     Step 2/3: TRANSACTION + JOURNAL. Records the before-state BEFORE
     performing the action. If this row doesn't exist, the action must
     not proceed -- journaling is not optional or after-the-fact.
     """
     check_kill_switch()
+    previous_state = {**previous_state, "planned_changes": preview["planned_changes"]}
     cur = conn.execute(
         """INSERT INTO action_log (action_type, tier, target_path, previous_state, status)
-           VALUES (?, ?, ?, ?, 'applied');""",
+           VALUES (?, ?, ?, ?, 'running');""",
         (preview["action_type"], preview["tier"], preview["target_path"],
          json.dumps(previous_state)),
     )
+    if proposal_item_id is not None:
+        claimed = conn.execute("""UPDATE proposal_items SET action_log_id=?
+            WHERE id=? AND status='pending' AND action_log_id IS NULL
+            AND proposal_id IN (SELECT id FROM proposals WHERE status='approved')""",
+            (cur.lastrowid, proposal_item_id))
+        if claimed.rowcount != 1:
+            conn.rollback()
+            raise ValueError('Proposal item changed or was already claimed; no filesystem action permitted')
     conn.commit()
     return cur.lastrowid
 
@@ -88,17 +112,20 @@ def complete_operation(conn, op_id: int, new_state: dict, verified: bool) -> dic
     with the caller responsible for having actually checked.
     """
     conn.execute(
-        "UPDATE action_log SET new_state = ? WHERE id = ?;",
-        (json.dumps(new_state), op_id),
+        "UPDATE action_log SET new_state = ?, status=? WHERE id = ?;",
+        (json.dumps(new_state), "applied" if verified else "manual_recovery_required", op_id),
     )
     conn.commit()
 
     status = "COMPLETE" if verified else "COMPLETE (unverified)"
-    print(f"{'✓' if verified else '⚠'} {status}")
+    from core.recovery_inspection import inspect_operation
+    undo_state = inspect_operation(conn, op_id)['state']
+    print(f"{'OK' if verified else 'WARNING'} {status}")
     print(f"  Operation ID: OP-{op_id:06d}")
-    print(f"  Undo available: YES")
-    print(f"  To reverse: ark undo OP-{op_id:06d}")
-    return {"op_id": op_id, "verified": verified}
+    print(f"  Undo state: {undo_state}")
+    if undo_state == 'UNDO_AVAILABLE':
+        print(f"  To reverse: ark undo OP-{op_id:06d}")
+    return {"op_id": op_id, "verified": verified, 'undo_state':undo_state}
 
 
 def undo_operation(conn, op_id: int, undo_fn) -> dict:
@@ -118,18 +145,40 @@ def undo_operation(conn, op_id: int, undo_fn) -> dict:
     if row["status"] == "reversed":
         print(f"[WARNING] OP-{op_id:06d} was already reversed.")
         return {"status": "already_reversed"}
+    if row["status"] != "applied":
+        return {"status": "failed", "reason": "operation_requires_recovery_before_undo"}
 
     previous_state = json.loads(row["previous_state"])
-    undo_fn(previous_state)  # caller restores the actual files/state
-
+    # Claim the original and commit reversal intent before touching files.
+    claimed = conn.execute("UPDATE action_log SET status='reversing' WHERE id=? AND status='applied'", (op_id,))
+    if claimed.rowcount != 1:
+        conn.rollback()
+        return {"status": "failed", "reason": "operation_requires_recovery_before_undo"}
     cur = conn.execute(
         """INSERT INTO action_log (action_type, tier, target_path, previous_state, new_state, status)
-           VALUES (?, ?, ?, ?, ?, 'applied');""",
+           VALUES (?, ?, ?, ?, ?, 'running');""",
         (f"undo:{row['action_type']}", row["tier"], row["target_path"],
          row["new_state"], row["previous_state"]),
     )
     new_op_id = cur.lastrowid
+    conn.commit()
+    try:
+        undo_fn(previous_state)
+    except UndoConflict as exc:
+        conn.execute("UPDATE action_log SET status='undo_blocked_by_drift' WHERE id=?", (op_id,))
+        conn.execute("UPDATE action_log SET status='undo_requires_review' WHERE id=?", (new_op_id,))
+        record_recovery(conn, op_id, 'UNDO_BLOCKED_BY_DRIFT', {**exc.evidence, 'reversal_op_id': new_op_id})
+        conn.commit()
+        return {'status': 'UNDO_BLOCKED_BY_DRIFT', 'reversal_op_id': new_op_id, 'evidence': exc.evidence}
+    except BaseException as exc:
+        conn.execute("UPDATE action_log SET status='manual_recovery_required' WHERE id IN (?,?)", (op_id, new_op_id))
+        record_recovery(conn, op_id, 'MANUAL_RECOVERY_REQUIRED', {'error': str(exc), 'reversal_op_id': new_op_id,
+                         'physical_outcome': 'UNKNOWN; inspect before retrying'})
+        conn.commit()
+        raise
 
+    conn.execute("UPDATE action_log SET status='applied' WHERE id=?", (new_op_id,))
+    record_recovery(conn, op_id, 'UNDO_COMPLETED', {'reversal_op_id': new_op_id})
     conn.execute(
         "UPDATE action_log SET status = 'reversed', reversed_at = datetime('now') WHERE id = ?;",
         (op_id,),
