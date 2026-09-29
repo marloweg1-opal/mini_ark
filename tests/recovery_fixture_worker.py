@@ -15,9 +15,11 @@ def main():
     if not (root / 'DISPOSABLE_GATE_A_FIXTURE').is_file():
         raise RuntimeError('Disposable fixture marker required')
     boundary = sys.argv[2]
+    native = len(sys.argv) > 3 and sys.argv[3] == 'native'
     conn = sqlite3.connect(root/'fixture.sqlite')
     conn.row_factory = sqlite3.Row
     begin, complete = journal.begin_transaction, journal.complete_operation
+    original_move = apply._move_no_replace
 
     def crash(name):
         if boundary == name:
@@ -32,6 +34,10 @@ def main():
         source, destination = Path(source).resolve(), Path(destination).resolve()
         if not source.is_relative_to(root) or not destination.is_relative_to(root):
             raise RuntimeError('Fixture escaped its root')
+        if native:
+            original_move(source, destination)
+            crash('source_removed')
+            return
         data = source.read_bytes()
         with destination.open('xb') as stream:
             stream.write(data[:3])
@@ -52,9 +58,10 @@ def main():
         return value
 
     with patch.object(journal, 'check_kill_switch'), patch.object(apply, 'check_operation_magnitude'), \
+         patch.object(apply, 'move_evidence_hold', return_value=None), \
          patch.object(journal, 'begin_transaction', begin_wrapped), \
          patch.object(journal, 'complete_operation', complete_wrapped), \
-         patch.object(apply.shutil, 'move', move):
+         patch.object(apply, '_move_no_replace', move):
         apply.execute_apply(conn, {'to_apply':[{'item_id':1, 'action':'move'}]}, verbose=False)
     conn.close()
 

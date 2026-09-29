@@ -10,7 +10,18 @@
     "safety_law": "Detect -> Explain -> Propose -> Review -> Approve -> Preview -> Execute -> Log -> Undo",
     "mutation_policy": "Placement evaluation is read-only. Moving, copying, quarantining, deleting, renaming, deploying, canonicalizing, or changing references requires a separate approval-gated operation.",
     "resolution_policy": "Do not default organizational findings to shortcut/reference creation. Determine LEAVE, REFERENCE, MIGRATE, CANONICALIZE, DEPLOY, QUARANTINE, or REVIEW. References are compatibility/discovery mechanisms, not substitutes for justified migration.",
-    "cathedralroot_role": "CathedralRoot/C: contains active manifestation, local implementation, and application operational state.",
+    "cathedralroot_role": "CathedralRoot/C: contains active manifestation, local implementation, application operational state, and active continuity machinery that makes this HEXSpression the user's own.",
+    "project_ark_continuity": {
+      "identity": "Umbrella architecture for the user's eventual PMM and PWM, including future Financial ARK, Entrepreneurial ARK and other domain ARKs.",
+      "journey_role": "Local project manager, coordinator and gopher among Project ARK systems; not the entirety of Project ARK.",
+      "canonical_surface": "C:\\",
+      "internal_root": null,
+      "lifecycle": "Active continuity-bearing system intended to migrate in its entirety between HEXSpressions.",
+      "reconciliation": "Inventory existing material; distinguish active continuity from documentation, archive, reference and source resources. Preserve LEAVE until evidence and separate authority justify changes.",
+      "automatic_migration_authorized": false,
+      "name_only_identity_inference_allowed": false,
+      "authority_source": "User Project ARK identity/canonical home clarification, 2026-09-29"
+    },
     "runescript_role": "RuneScript/R: contains durable source, stewardship records, reusable identity material, project canon, media, library, and intake.",
     "legacy_wrapper_policy": "R:\\RuneScript is a legacy wrapper pending reconciliation. Do not treat it as the canonical RuneScript root.",
     "policy_precedence": [

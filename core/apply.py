@@ -17,10 +17,8 @@ Two possible outcomes per file, decided PER ITEM, not per proposal:
 
 Safety order, enforced before ANY disk write, in this sequence:
   1. Protected path check (hard floor, not just DB-editable)
-  2. Dependent check (if 'move' requested and something depends on the
-     current location, auto-downgrade to 'shortcut' + emit a
-     code_change_needed proposal instead of silently breaking a
-     Rainmeter skin, CareBloomOS reference, etc.)
+  2. Dependent check (known dependencies block the move; approval does
+     not silently change into permission to create a shortcut).
   3. Circuit breaker (batch magnitude, independent of tier)
   4. Kill switch (checked again at the actual transaction boundary,
      inside journal.begin_transaction -- this module does not bypass it)
@@ -30,12 +28,14 @@ import os
 import json
 import platform
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 from core import journal
 from core.recovery_inspection import file_identity
 from core import quarantine
 from core.action_evidence import quarantine_hold
+from core.move_evidence import checked_evidence, MoveEvidenceDenied
 from core.circuit_breaker import check_operation_magnitude, OperationTooLarge
 
 # Non-negotiable floor. Editable rows in protected_paths can ADD to
@@ -225,7 +225,13 @@ def add_proposal_item(conn, proposal_id: int, canonical_path: str,
 # PREVIEW: build the plan, decide real mode per item, no disk writes
 # ---------------------------------------------------------------------
 
-def plan_apply(conn, proposal_id: int) -> dict:
+def move_evidence_hold():
+    """No production adapter can yet authenticate complete move/dependency evidence."""
+    return ('MOVE_EVIDENCE_REQUIRED: No trusted move evidence verifier is available. '
+            'Approval and absence of registered dependents do not prove dependency clearance.')
+
+
+def plan_apply(conn, proposal_id: int, *, move_verifier=None) -> dict:
     """
     Step 1 of the ritual. Walks every pending proposal_item under this
     proposal, resolves protected/dependent status, and decides the
@@ -258,6 +264,20 @@ def plan_apply(conn, proposal_id: int) -> dict:
             continue
 
         actual_mode = item["requested_mode"]
+
+        evidence_reason = None
+        if actual_mode == 'move':
+            try:
+                if move_verifier is None:
+                    evidence_reason = move_evidence_hold()
+                else:
+                    checked_evidence(move_verifier, conn, item, phase='plan')
+            except MoveEvidenceDenied as exc:
+                evidence_reason = str(exc)
+        if evidence_reason:
+            plan.append({'item_id': item['id'], 'path': item['canonical_path'],
+                         'action': 'blocked', 'reason': evidence_reason})
+            continue
 
         if actual_mode == "move":
             dependents = get_active_dependents(conn, item["canonical_path"])
@@ -336,7 +356,14 @@ def _remove_shortcut(dest: Path):
         os.rmdir(dest)
 
 
-def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict:
+def _move_no_replace(source, dest):
+    """Never fall back to copy/delete or nest into an occupied directory."""
+    if platform.system() != 'Windows':
+        raise RuntimeError('No verified no-replace move primitive on this platform')
+    os.rename(source, dest)
+
+
+def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True, *, move_verifier=None) -> dict:
     """
     Step 2-4 of the ritual, run per item: Transaction -> real filesystem
     action -> Verification. Circuit breaker checked ONCE against the
@@ -368,9 +395,35 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
         if not proposal or proposal["status"] != "approved" or item["status"] != "pending" or entry["action"] != item["requested_mode"]:
             failed.append({"path": item["canonical_path"], "reason": "Approval or item semantics changed; fresh review required"})
             continue
+        evidence = None
+        evidence_reason = None
+        if entry['action'] == 'move':
+            try:
+                if move_verifier is None:
+                    evidence_reason = move_evidence_hold()
+                else:
+                    evidence = checked_evidence(move_verifier, conn, item, phase='execute')
+            except MoveEvidenceDenied as exc:
+                evidence_reason = str(exc)
+        if evidence_reason:
+            failed.append({'path': item['canonical_path'], 'reason': evidence_reason})
+            continue
         source = Path(item["canonical_path"])
         dest = Path(item["dest_path"]) if item["dest_path"] else None
         action = entry["action"]
+        if evidence is not None:
+            try:
+                from core.read_guard import require_path_not_held
+                from core.media_inventory import safe_metadata
+                require_path_not_held(source)
+                require_path_not_held(dest)
+                safe_metadata(source, read_guard=require_path_not_held)
+                safe_metadata(dest.parent, read_guard=require_path_not_held)
+                if is_protected(conn, str(dest)):
+                    raise ValueError('Destination is protected')
+            except (OSError, ValueError) as exc:
+                failed.append({'path': str(source), 'reason': str(exc)})
+                continue
         if dest is not None and os.path.lexists(dest):
             failed.append({'path': str(source), 'reason': 'Destination occupied; no overwrite or implicit directory nesting permitted'})
             continue
@@ -384,9 +437,25 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
             continue
 
         identity = file_identity(source) if action == 'move' else None
+        if evidence is not None and identity != asdict(evidence.identity):
+            failed.append({'path': str(source), 'reason': 'Source no longer matches reviewed identity'})
+            continue
         if action == 'move' and identity is None:
             failed.append({'path':str(source), 'reason':'Stable regular-file identity unavailable; move requires review'})
             continue
+
+        if action == 'move':
+            try:
+                from core.media_inventory import safe_metadata
+                parent = safe_metadata(dest.parent)
+                source_now = safe_metadata(source)
+                if platform.system() != 'Windows' or parent.st_dev != source_now.st_dev:
+                    raise ValueError('Cross-volume or unsupported move requires staged recovery review')
+                if not dest.parent.is_dir():
+                    raise ValueError('Existing destination directory required; no implicit folder creation')
+            except (OSError, ValueError) as exc:
+                failed.append({'path':str(source), 'reason':str(exc)})
+                continue
 
         preview = journal.preview_operation(
             conn, action_type=f"file_{action}", tier=tier, target_path=str(source),
@@ -394,21 +463,38 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
         )
 
         try:
+            if evidence is not None:
+                if checked_evidence(move_verifier, conn, item, phase='before_intent') != evidence:
+                    raise MoveEvidenceDenied('Evidence changed before intent')
             op_id = journal.begin_transaction(
-                conn, preview, previous_state={"path": str(source), "existed": source.exists(), 'identity':identity},
+                conn, preview, previous_state={"path": str(source), "existed": source.exists(), 'identity':identity,
+                                               'move_evidence': asdict(evidence) if evidence is not None else None},
                 proposal_item_id=item['id'],
             )
+        except MoveEvidenceDenied as exc:
+            failed.append({'path': str(source), 'reason': str(exc)})
+            continue
         except journal.ExecutionDisabled as e:
             return {"status": "blocked_by_kill_switch", "reason": str(e),
                     "applied_before_block": applied, "failed": failed}
 
         try:
+            journal.check_kill_switch()
             if action == "shortcut":
                 _create_shortcut(source, dest)
                 verified = dest.exists() and source.exists()
             elif action == "move":
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(dest))
+                if evidence is not None:
+                    if checked_evidence(move_verifier, conn, item, phase='before_mutation') != evidence:
+                        raise MoveEvidenceDenied('Evidence changed after intent')
+                    require_path_not_held(source)
+                    require_path_not_held(dest)
+                    safe_metadata(dest.parent, read_guard=require_path_not_held)
+                    if is_protected(conn, str(source)) or is_protected(conn, str(dest)) or get_active_dependents(conn, str(source)):
+                        raise MoveEvidenceDenied('Protection or dependencies changed after intent')
+                if file_identity(source) != identity:
+                    raise RuntimeError('Source changed after intent; move stopped')
+                _move_no_replace(source, dest)
                 conn.execute("UPDATE files SET canonical_path = ? WHERE canonical_path = ?;",
                              (str(dest), str(source)))
                 verified = dest.exists() and not source.exists()
@@ -465,9 +551,8 @@ def execute_apply(conn, plan: dict, tier: int = 3, verbose: bool = True) -> dict
 
 def undo_apply(conn, op_id: int) -> dict:
     """
-    Reverses a single apply action_log row by consulting how it was
-    RECORDED, not by re-inspecting the current filesystem -- the
-    action_log row is the source of truth for what happened.
+    Consult recorded intent and current identity. Historical permission
+    does not authorize overwriting a new occupant or undoing content drift.
     """
     row = conn.execute("SELECT * FROM action_log WHERE id = ?;", (op_id,)).fetchone()
     if row is None:

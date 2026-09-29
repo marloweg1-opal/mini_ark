@@ -27,13 +27,16 @@ class RecoveryBoundaries(unittest.TestCase):
         return conn
 
     def test_process_death_across_copy_delete_and_journal_boundaries(self):
-        for boundary in ('intent_committed', 'partial_copy', 'copy_complete', 'source_removed',
-                         'before_verification_receipt', 'verification_committed', 'completed'):
-            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
+        cases = [('simulated', boundary) for boundary in ('intent_committed', 'partial_copy', 'copy_complete', 'source_removed',
+                         'before_verification_receipt', 'verification_committed', 'completed')]
+        cases += [('native', boundary) for boundary in ('intent_committed', 'source_removed',
+                         'before_verification_receipt', 'verification_committed', 'completed')]
+        for mode, boundary in cases:
+            with self.subTest(mode=mode, boundary=boundary), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 self.fixture(root).close()
                 worker = Path(__file__).with_name('recovery_fixture_worker.py')
-                child = subprocess.run([sys.executable, '-X', 'utf8', '-B', str(worker), tmp, boundary], capture_output=True, timeout=20)
+                child = subprocess.run([sys.executable, '-X', 'utf8', '-B', str(worker), tmp, boundary, mode], capture_output=True, timeout=20)
                 self.assertEqual(child.returncode, 0 if boundary == 'completed' else 73, child.stderr.decode())
                 conn = sqlite3.connect(root/'fixture.sqlite')
                 conn.row_factory = sqlite3.Row
@@ -48,7 +51,7 @@ class RecoveryBoundaries(unittest.TestCase):
                     self.assertEqual(json.loads(receipt['previous_state'])['planned_changes']['dest'], str(root/'dest'))
                     before = {p.name:p.read_bytes() for p in (root/'source',root/'dest') if p.exists()}
                     self.assertIn(b'original fixture content', before.values())
-                    with patch.object(apply, 'check_operation_magnitude'), patch.object(apply.shutil, 'move') as move:
+                    with patch.object(apply, 'check_operation_magnitude'), patch.object(apply, '_move_no_replace') as move:
                         result = apply.execute_apply(conn, {'to_apply':[{'item_id':1,'action':'move'}]}, verbose=False)
                     move.assert_not_called()
                     self.assertEqual(result['failed_count'], 1)
@@ -62,7 +65,7 @@ class RecoveryBoundaries(unittest.TestCase):
                 root = Path(tmp)
                 conn = self.fixture(root)
                 try:
-                    with patch.object(apply, 'check_operation_magnitude'), patch.object(journal, 'check_kill_switch'), patch('builtins.print'):
+                    with patch.object(apply, 'move_evidence_hold', return_value=None), patch.object(apply, 'check_operation_magnitude'), patch.object(journal, 'check_kill_switch'), patch('builtins.print'):
                         result = apply.execute_apply(conn, {'to_apply':[{'item_id':1,'action':'move'}]}, verbose=False)
                         self.assertEqual(result['applied_count'], 1)
                         original = root/'source'
@@ -102,7 +105,7 @@ class RecoveryBoundaries(unittest.TestCase):
                 root = Path(tmp)
                 conn = self.fixture(root)
                 try:
-                    with patch.object(apply, 'check_operation_magnitude'), patch.object(journal, 'check_kill_switch'), patch('builtins.print'):
+                    with patch.object(apply, 'move_evidence_hold', return_value=None), patch.object(apply, 'check_operation_magnitude'), patch.object(journal, 'check_kill_switch'), patch('builtins.print'):
                         result = apply.execute_apply(conn, {'to_apply':[{'item_id':1,'action':'move'}]}, verbose=False)
                         op = result['applied'][0]['op_id']
                         if mode == 'content_drift':

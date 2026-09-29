@@ -75,4 +75,31 @@ def contract_summary(root: Path) -> dict[str, Any]:
         "protected_default": contract["protected_territory"]["default_posture"],
         "graduation_gates": contract["graduation_gates"],
         "shadow_mode": contract["shadow_mode"],
+        "resource_feasibility": contract.get("resource_feasibility", {}),
+    }
+
+
+def assess_resource_feasibility(requirements: dict[str, int],
+                                available: dict[str, int | None]) -> dict[str, Any]:
+    """Compare same-unit resource quantities; feasibility never grants execution authority."""
+    blocked, unknown = [], []
+    for resource, required in requirements.items():
+        actual = available.get(resource)
+        if type(required) is not int or required < 0:
+            raise ValueError("Required resources must be nonnegative integer quantities.")
+        if actual is not None and (type(actual) is not int or actual < 0):
+            raise ValueError("Available resources must be nonnegative integers or unknown.")
+        if required == 0:
+            continue
+        if actual is None:
+            unknown.append(resource)
+        elif actual < required:
+            blocked.append({"resource": resource, "required": required,
+                            "available": actual, "shortfall": required - actual})
+    return {
+        "state": "RESOURCE_BLOCKED" if blocked else (
+            "RESOURCE_UNKNOWN" if unknown else "RESOURCE_FEASIBLE"),
+        "blocked": blocked, "unknown": unknown,
+        "execution_authorized": False,
+        "safety_assessed": False,
     }

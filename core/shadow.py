@@ -27,6 +27,7 @@ from core.patrol import live_discover, initialize_patrol, scoped_policy, compare
 from core.apply import is_protected, get_active_dependents
 from core.dependency_evidence import inspect_references
 from core.recovery_domain import observe as recovery_observe
+from core.read_guard import require_path_not_held
 
 
 SHADOW_REPORT_PREFIX = "SHADOW_RUN"
@@ -44,11 +45,14 @@ def _metadata_probe(row: Any) -> tuple[str, str | None]:
     row = dict(row)
     path = Path(row["canonical_path"])
     try:
-        for candidate in (path, *path.parents):
+        require_path_not_held(path)
+        for candidate in (*reversed(path.parents), path):
+            require_path_not_held(path)
+            require_path_not_held(candidate)
             info = os.lstat(candidate)
             if statmod.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
                 return "REPARSE_POINT_SKIPPED", "Live verification would cross a reparse point."
-        stat = os.lstat(path)
+        stat = info
     except FileNotFoundError:
         return "MISSING_DURING_SHADOW", "Path was present in the ledger but missing during Shadow Mode."
     except (OSError, PermissionError) as exc:
@@ -155,6 +159,9 @@ def _write_reports(docs_root: Path, run_id: int, summary: dict[str, Any], eviden
 
 
 def run_shadow(conn, *, scope: str, docs_root: str, limit: int | None = None, verify_current: bool = True) -> dict[str, Any]:
+    from core.patrol_state import read_state
+    if read_state(conn)['paused']:
+        raise PermissionError('Patrol is paused or its persisted state requires review')
     initialize_patrol(conn)
     limit = min(limit or 500, 5000)
     if limit < 1:
@@ -199,7 +206,7 @@ def run_shadow(conn, *, scope: str, docs_root: str, limit: int | None = None, ve
             combined[key] = {**row, "evidence_source": "ledger"}
     rows = sorted(combined.values(), key=lambda r: r["canonical_path"].casefold())
     dependency_search = inspect_references([r['canonical_path'] for r in rows], [scope],
-        max_files=64, max_bytes=500_000, max_seconds=2) if verify_current else None
+        max_files=64, max_bytes=500_000, max_seconds=2, privacy_conn=conn) if verify_current else None
     evidence_source = "both" if live_rows and ledger_rows else "live_scan" if verify_current else "ledger"
     posture = scoped_policy(conn, scope, "lifecycle")
     observations = []

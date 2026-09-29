@@ -23,6 +23,7 @@ TEST_OUTPUT = Path(tempfile.gettempdir()) / "mini_ark_conversation_ingest_test_r
 class ConversationIngestTests(unittest.TestCase):
     def make_conn(self):
         conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
         conn.row_factory = sqlite3.Row
         initialize_schema(conn)
         return conn

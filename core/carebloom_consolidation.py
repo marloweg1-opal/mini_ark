@@ -285,6 +285,11 @@ def _write_markdown_plan(path: Path, plan: dict) -> None:
 
 
 def execute_plan(plan_path: str, update_refs: bool = False) -> dict:
+    raise PermissionError(
+        "STEWARDSHIP_REVIEW_REQUIRED: Legacy consolidation execution is held. "
+        "Copy-first does not authorize destination replacement or reference edits. "
+        "A journaled, identity-bound executor is required; no plan or source was read."
+    )
     plan_file = Path(plan_path)
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
     copied = []
@@ -484,6 +489,11 @@ def _write_archive_markdown(path: Path, plan: dict) -> None:
 
 
 def execute_archive_map(plan_path: str) -> dict:
+    raise PermissionError(
+        "STEWARDSHIP_REVIEW_REQUIRED: Legacy archive staging is held pending "
+        "journaled, no-replace execution and affirmative action evidence. "
+        "No plan or source was read."
+    )
     plan_file = Path(plan_path)
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
     target = Path(plan["target_root"])

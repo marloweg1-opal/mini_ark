@@ -15,7 +15,16 @@ def read_state(conn):
                      (json.dumps(DEFAULT), 'Gate A initial posture'))
         conn.commit()
         return read_state(conn)
-    return {**json.loads(row[1]), 'version': row[0]}
+    try:
+        state = json.loads(row[1])
+        if not isinstance(state, dict) or type(state.get('paused')) is not bool:
+            raise ValueError('Invalid Patrol control state')
+        if any(state.get(key) != DEFAULT[key] for key in ('lifecycle','mode','authority')):
+            raise ValueError('Unsupported Gate A posture; no authority expansion permitted')
+    except (ValueError, TypeError) as exc:
+        return {**DEFAULT, 'paused':True, 'version':row[0],
+                'state_integrity':'REVIEW_REQUIRED', 'reason':str(exc)}
+    return {**state, 'version': row[0]}
 
 
 def update_state(conn, *, version, paused, reason):

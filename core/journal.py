@@ -111,10 +111,15 @@ def complete_operation(conn, op_id: int, new_state: dict, verified: bool) -> dic
     expected. This does not re-derive trust -- it records the claim,
     with the caller responsible for having actually checked.
     """
-    conn.execute(
-        "UPDATE action_log SET new_state = ?, status=? WHERE id = ?;",
+    if type(verified) is not bool or not isinstance(new_state, dict):
+        raise ValueError('Completion requires an explicit boolean and structured evidence')
+    cur = conn.execute(
+        "UPDATE action_log SET new_state = ?, status=? WHERE id = ? AND status='running';",
         (json.dumps(new_state), "applied" if verified else "manual_recovery_required", op_id),
     )
+    if cur.rowcount != 1:
+        conn.rollback()
+        raise ValueError('Completion cannot overwrite a non-running or missing receipt')
     conn.commit()
 
     status = "COMPLETE" if verified else "COMPLETE (unverified)"
@@ -148,7 +153,16 @@ def undo_operation(conn, op_id: int, undo_fn) -> dict:
     if row["status"] != "applied":
         return {"status": "failed", "reason": "operation_requires_recovery_before_undo"}
 
-    previous_state = json.loads(row["previous_state"])
+    try:
+        previous_state = json.loads(row["previous_state"])
+        if not isinstance(previous_state, dict):
+            raise ValueError('Previous state must be an object')
+    except (ValueError, TypeError) as exc:
+        evidence = {'reason':str(exc), 'physical_changes':False}
+        conn.execute("UPDATE action_log SET status='manual_recovery_required' WHERE id=?", (op_id,))
+        record_recovery(conn, op_id, 'MANUAL_RECOVERY_REQUIRED', evidence)
+        conn.commit()
+        return {'status':'MANUAL_RECOVERY_REQUIRED', 'evidence':evidence}
     # Claim the original and commit reversal intent before touching files.
     claimed = conn.execute("UPDATE action_log SET status='reversing' WHERE id=? AND status='applied'", (op_id,))
     if claimed.rowcount != 1:

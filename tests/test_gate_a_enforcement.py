@@ -60,6 +60,9 @@ class GateAEnforcementTests(unittest.TestCase):
                 root = Path(tmp)
                 (root/'asset.png').write_bytes(b'fixture')
                 (root/'skin.ini').write_text('[Skin]\nImageName=asset.png')
+                from core.perception_policy import set_policy
+                set_policy(conn, tmp, 'LIMITED', reason='Disposable dependency fixture',
+                           purposes=('dependency_inspection',), retention=True)
                 result = run_shadow(conn, scope=tmp, docs_root=reports, limit=10)
                 self.assertFalse(result['dependency_coverage']['dependency_clearance'])
                 rows = conn.execute('SELECT evidence_json FROM stewardship_findings').fetchall()
@@ -70,6 +73,40 @@ class GateAEnforcementTests(unittest.TestCase):
                 (root/'skin.ini').write_text('[Skin]\nImageName=other.png')
                 changed = run_shadow(conn, scope=tmp, docs_root=reports, limit=10)
                 self.assertGreaterEqual(len(changed['comparison']['changed']), 2)
+        finally:
+            conn.close()
+
+    def test_shadow_persists_dependency_method_limits(self):
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        initialize_schema(conn)
+        try:
+            with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as reports:
+                root = Path(tmp)
+                (root/'asset.png').write_bytes(b'fixture')
+                (root/'script.ps1').write_text("$image = 'asset.png'")
+                (root/'config.json').write_text('{"image":"asset.png"}')
+                from core.perception_policy import set_policy
+                set_policy(conn, tmp, 'LIMITED', reason='Disposable method-coverage fixture',
+                           purposes=('dependency_inspection',), retention=True)
+                result = run_shadow(conn, scope=tmp, docs_root=reports, limit=10)
+                persisted = json.loads(conn.execute(
+                    'SELECT summary_json FROM shadow_runs WHERE id=?',
+                    (result['shadow_run_id'],)).fetchone()[0])
+                report = json.loads(Path(result['evidence_path']).read_text(encoding='utf-8'))
+                for summary in (result, persisted, report['summary']):
+                    coverage = summary['dependency_coverage']
+                    checked = {Path(item['path']).name: item for item in coverage['checked']}
+                    self.assertEqual(checked['script.ps1']['reference_method'], 'TEXT_MATCHING_ONLY')
+                    self.assertFalse(checked['script.ps1']['structured_parser_supported'])
+                    self.assertEqual(checked['config.json']['reference_method'],
+                                     'STRUCTURED_LITERALS_AND_TEXT_MATCHING')
+                    self.assertTrue(checked['config.json']['structured_parser_supported'])
+                    self.assertTrue(all(not item['dependency_semantics_complete']
+                                        for item in checked.values()))
+                    self.assertEqual(coverage['dependency_state'], 'UNKNOWN')
+                    self.assertFalse(coverage['dependency_clearance'])
+                self.assertEqual(result['managed_file_mutations'], 0)
         finally:
             conn.close()
 

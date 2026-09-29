@@ -25,7 +25,7 @@ class CalibrationTests(unittest.TestCase):
         try:
             conn.execute("INSERT INTO proposals(description,status) VALUES('fixture','superseded')")
             conn.execute("INSERT INTO proposal_items(proposal_id,canonical_path,dest_path,requested_mode) VALUES(1,'source','destination','move')")
-            with patch('core.apply.check_operation_magnitude'), patch('core.apply.shutil.move') as move:
+            with patch('core.apply.check_operation_magnitude'), patch('core.apply._move_no_replace') as move:
                 result=execute_apply(conn,{'to_apply':[{'item_id':1,'action':'move'}]},verbose=False)
                 self.assertEqual(result['failed_count'],1)
                 move.assert_not_called()
@@ -66,7 +66,7 @@ class CalibrationTests(unittest.TestCase):
         finally: conn.close()
 
     def test_dependency_search_positive_negative_and_budget(self):
-        from core.dependency_evidence import inspect_references
+        from dependency_fixture import inspect_references
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'skin.ini'
             path.write_text('ImageName=C:\\HEXSEED\\Icons\\moonstone.ico',encoding='utf-8')
@@ -80,7 +80,7 @@ class CalibrationTests(unittest.TestCase):
             self.assertTrue(bounded['errors'])
 
     def test_dependency_read_failure_is_uncertainty(self):
-        from core.dependency_evidence import inspect_references
+        from dependency_fixture import inspect_references
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'skin.ini'
             path.write_text('fixture')
@@ -102,9 +102,9 @@ class CalibrationTests(unittest.TestCase):
                     'fingerprint':'current','coverage_complete':True,'unresolved':0,'condition':'explicit_retirement',
                     'owner_decision_receipt':'fixture-owner-decision'} for kind in requirements]
             with self.subTest(action=action):
-                self.assertEqual(assess_action(action,facts,current_fingerprint='current')['confidence'],'HIGH')
-                self.assertFalse(assess_action(action,facts[:-1],current_fingerprint='current')['eligible'])
-                self.assertFalse(assess_action(action,facts,current_fingerprint='changed')['eligible'])
+                self.assertEqual(assess_action(action,facts,current_fingerprint='current',receipt_verifier=lambda fact, fingerprint: True)['confidence'],'HIGH')
+                self.assertFalse(assess_action(action,facts[:-1],current_fingerprint='current',receipt_verifier=lambda fact, fingerprint: True)['eligible'])
+                self.assertFalse(assess_action(action,facts,current_fingerprint='changed',receipt_verifier=lambda fact, fingerprint: True)['eligible'])
 
     def test_perception_never_supplies_action_authority(self):
         facts=[{'kind':kind,'verified':True,'receipt':'model','source':'perception','fingerprint':'a'} for kind in REQUIREMENTS['MIGRATE']]

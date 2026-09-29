@@ -33,6 +33,7 @@ ASSET_PIPELINE_ROOT = ROOT / "asset_pipeline"
 ASSET_INBOX = ASSET_PIPELINE_ROOT / "inbox"
 ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_TIMEOUT_SECONDS = 120
+MEDIA_INVENTORY_LOCK = threading.Lock()
 PREVIEW_LOCK = threading.RLock()
 PREVIEW_RECEIPTS = {}
 DURABLE_DOC_PREFIXES = (
@@ -63,6 +64,7 @@ SYSTEM_NOISE_PREFIXES = (
 
 ACTION_DEFS = {
     'recovery-status': {'title':'Recovery & Repair','mode':'manage','risk':'green'},
+    'media-inventory-resume': {'title':'Continue Media Inventory','mode':'manage','risk':'green'},
     'perception-policy': {'title':'Perception Policy','mode':'manage','risk':'green'},
     "patrol-status": {"title": "Patrol Status", "mode": "manage", "risk": "green"},
     "doctor": {
@@ -326,19 +328,50 @@ def _json_response(handler: SimpleHTTPRequestHandler, payload: dict, status: int
     handler.wfile.write(body)
 
 
+MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
+
+
+class RequestBodyError(ValueError):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def _unique_request_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('Duplicate request field')
+        result[key] = value
+    return result
+
+
 def _read_json_body(handler: SimpleHTTPRequestHandler) -> dict:
-    try:
-        length = int(handler.headers.get("Content-Length", "0"))
-    except ValueError:
-        length = 0
-    if length <= 0:
+    if handler.headers.get('Transfer-Encoding'):
+        raise RequestBodyError('Transfer-Encoding is not supported.')
+    if handler.headers.get('Content-Encoding', 'identity').lower() != 'identity':
+        raise RequestBodyError('Compressed request bodies are not supported.', 415)
+    lengths = handler.headers.get_all('Content-Length', [])
+    if len(lengths) > 1:
+        raise RequestBodyError('Ambiguous Content-Length.')
+    value = lengths[0] if lengths else '0'
+    if not value.isascii() or not value.isdecimal() or len(value) > 10:
+        raise RequestBodyError('Invalid Content-Length.')
+    length = int(value)
+    if length > MAX_REQUEST_BODY_BYTES:
+        raise RequestBodyError('Request exceeds the 32 MiB body limit; use a local asset path.', 413)
+    if length == 0:
         return {}
     raw = handler.rfile.read(length)
+    if len(raw) != length:
+        raise RequestBodyError('Incomplete request body.')
     try:
-        payload = json.loads(raw.decode("utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_request_fields)
+    except (UnicodeError, ValueError, RecursionError):
+        raise RequestBodyError('Request must contain a valid UTF-8 JSON object.') from None
+    if not isinstance(payload, dict):
+        raise RequestBodyError('Request must contain a JSON object.')
+    return payload
 
 
 def _run_command(command: list[str], timeout: int = DEFAULT_TIMEOUT_SECONDS) -> dict:
@@ -1404,6 +1437,17 @@ def patrol_status():
 
 
 def run_action(action_id: str, payload: dict) -> tuple[dict, int]:
+    if action_id == 'media-inventory-resume':
+        if not (ROOT/'private'/'media_recovery'/'inventory-v2.sqlite').is_file():
+            return {'ok':False,'error':'No registered continuation task'},409
+        if not MEDIA_INVENTORY_LOCK.acquire(blocking=False):
+            return {'ok':False,'error':'A media inventory batch is already running'},409
+        try:
+            result = _run_command([sys.executable,'-B',str(ROOT/'work'/'resume_media_inventory.py'),
+                                   '--max-directories','100','--max-seconds','15','--hash-files','100'],timeout=60)
+            return {'action':action_id,**result},200
+        finally:
+            MEDIA_INVENTORY_LOCK.release()
     if action_id == 'recovery-status':
         from core.recovery_domain import capability_status
         summary = ROOT/'private'/'media_recovery'/'latest_summary.json'
@@ -1569,7 +1613,7 @@ def _apply_proposal_locked(proposal_id, execute, confirmed, preview_token):
     command = [str(ARK_CMD), "apply", str(proposal_id)]
     if not execute:
         command.append("--preview")
-    elif not confirmed:
+    elif confirmed is not True:
         return {
             "ok": False,
             "requires_confirmation": True,
@@ -1586,7 +1630,11 @@ def _apply_proposal_locked(proposal_id, execute, confirmed, preview_token):
     result = _run_command(command, timeout=300)
     token = None
     if not execute and result["ok"]:
-        if _proposal_fingerprint(proposal_id) != fingerprint:
+        try:
+            current_fingerprint = _proposal_fingerprint(proposal_id)
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": f"Preview conditions could not be verified. Preview again: {exc}"}, 409
+        if current_fingerprint != fingerprint:
             return {"ok": False, "error": "Proposal conditions changed during preview. Preview again."}, 409
         token = secrets.token_urlsafe(32)
         now = time.monotonic()
@@ -1619,7 +1667,7 @@ def set_proposal_item_mode(item_id: int, mode: str) -> tuple[dict, int]:
 
 
 def undo_operation_bridge(op_id: int, confirmed: bool) -> tuple[dict, int]:
-    if not confirmed:
+    if confirmed is not True:
         return {
             "ok": False,
             "requires_confirmation": True,
@@ -1639,6 +1687,12 @@ def undo_operation_bridge(op_id: int, confirmed: bool) -> tuple[dict, int]:
     return {"ok": result["ok"], "action": "undo", "op_id": op_id, **result}, 200
 
 
+def _private_request_path(path):
+    parts = unquote(urlparse(path).path).replace('\\', '/').lower().split('/')
+    return (any(part in {'private', '.git'} for part in parts)
+            or any(part.endswith(('.sqlite', '.sqlite-wal', '.sqlite-shm')) for part in parts))
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -1649,10 +1703,18 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as exc:
             _json_response(self, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
 
+    def do_HEAD(self):  # noqa: N802
+        if _private_request_path(self.path):
+            self.send_response(403)
+            self.send_header('Content-Length', '0')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            return
+        super().do_HEAD()
+
     def _get(self):
         parsed = urlparse(self.path)
-        parts = unquote(parsed.path).replace('\\','/').lower().split('/')
-        if any(part in {'private','.git'} for part in parts) or any(part.endswith(('.sqlite','.sqlite-wal','.sqlite-shm')) for part in parts):
+        if _private_request_path(self.path):
             _json_response(self, {'ok':False,'error':'Private local evidence is not a static web resource'},403)
             return
         if parsed.path == "/api/search":
@@ -1692,6 +1754,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             self._post()
+        except RequestBodyError as exc:
+            self.close_connection = True
+            _json_response(self, {'ok': False, 'error': str(exc)}, exc.status)
         except Exception as exc:
             _json_response(self, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
 
@@ -1722,7 +1787,7 @@ class Handler(SimpleHTTPRequestHandler):
                 result, status_code = apply_proposal(
                     proposal_id,
                     execute=True,
-                    confirmed=bool(payload.get("confirmed")),
+                    confirmed=payload.get("confirmed"),
                     preview_token=str(payload.get("preview_token", "")),
                 )
                 _json_response(self, result, status_code)
@@ -1748,7 +1813,7 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError:
                 _json_response(self, {"ok": False, "error": "Invalid operation id."}, 400)
                 return
-            result, status_code = undo_operation_bridge(op_id, confirmed=bool(payload.get("confirmed")))
+            result, status_code = undo_operation_bridge(op_id, confirmed=payload.get("confirmed"))
             _json_response(self, result, status_code)
             return
         _json_response(self, {"ok": False, "error": "Unknown endpoint."}, 404)

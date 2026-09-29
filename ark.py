@@ -766,11 +766,13 @@ def cmd_apply(args):
     except apply_mod.ProposalNotApproved as e:
         print(f"[FAILED] {e}")
         print(f"  Approve first: python ark.py approve {args.proposal_id}")
+        conn.close()
         sys.exit(1)
         return
 
     if plan["status"] != "planned":
         print(f"[FAILED] {plan.get('reason', plan)}")
+        conn.close()
         sys.exit(1)
         return
 
@@ -797,16 +799,21 @@ def cmd_apply(args):
 
     if result["status"] == "blocked_by_circuit_breaker":
         print(f"[BLOCKED] {result['reason']}")
+        conn.close()
         sys.exit(1)
     elif result["status"] == "blocked_by_kill_switch":
         print(f"[BLOCKED] {result['reason']}")
+        conn.close()
         sys.exit(1)
     else:
-        print(f"[SUCCESS] Applied: {result['applied_count']}  Failed: {result['failed_count']}")
+        outcome = ("PARTIAL FAILURE" if result['applied_count'] else "FAILED") if result['failed_count'] else "SUCCESS"
+        print(f"[{outcome}] Applied: {result['applied_count']}  Failed: {result['failed_count']}")
         for f in result["failed"]:
             print(f"    [FAILED] {f['path']}: {f['reason']}")
 
     conn.close()
+    if result['failed_count']:
+        sys.exit(1)
 
 
 def cmd_register_dependent(args):
@@ -853,6 +860,7 @@ def cmd_undo(args):
     row = conn.execute("SELECT action_type FROM action_log WHERE id = ?;", (args.op_id,)).fetchone()
     if row is None:
         print(f"[FAILED] No such operation: OP-{args.op_id:06d}")
+        conn.close()
         sys.exit(1)
         return
 
@@ -867,6 +875,7 @@ def cmd_undo(args):
             result = {'status':'UNDO_REQUIRES_REVIEW', 'reason':'Unknown operation type has no verified reversal contract'}
     except ExecutionDisabled as e:
         print(str(e))
+        conn.close()
         sys.exit(1)
         return
     conn.close()

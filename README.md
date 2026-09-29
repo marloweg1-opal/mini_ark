@@ -1,4 +1,24 @@
-# mini_ark
+# Journey / Mini ARK
+
+Journey is the evolving identity of Mini ARK: a local HEXSEED companion for
+continuity, stewardship, coordination and reducing friction between Junior and
+the computer. Project ARK is the broader PMM/PWM and domain-ARK umbrella; Journey
+is its intended coordinator/gopher, not its entirety.
+
+## Current status: 2026-09-29
+
+| State | Scope |
+|---|---|
+| Implemented and verified locally | Bounded discovery/reference evidence, privacy policy, source holds, inventory, journal and recovery protections; 288-test checkpoint |
+| Implemented but held | Operation-bound move verifier with test-only issuer; default production moves and legacy consolidation executors remain denied |
+| Active milestone | CareBloom coherent custody: ownership, custody, provenance, then finer classification |
+| Near-term | Exact eligible custody candidate and legitimate production evidence/approval source |
+| Future, not shipped | Broader observation depths, advanced judgment, capability expansion and reasoning council |
+
+Read [public checkpoint](docs/JOURNEY_PUBLIC_CHECKPOINT.md) and
+[forward architecture](docs/JOURNEY_FORWARD_ARCHITECTURE.md) before older operating
+guides. Historical descriptions below preserve development context, not current
+authority. No live managed move is claimed from the verifier integration.
 
 **mini_ark** is a local-first **Archival Resonance Kernel** for continuity, canon, project memory, contextual retrieval, and human-centered AI collaboration.
 
@@ -51,7 +71,7 @@ mini_ark's guardrails are intentionally architected by the maintainer: human rev
 
 mini_ark is currently under active development.
 
-Current work focuses on conversational ingestion, memory classification, canon preservation, retrieval, and project continuity.
+Current work focuses on HEXSEED operational congruence, starting with CareBloom custody. Discover collectors, semantic providers and new persistent user-knowledge storage remain disabled.
 
 ### Gate A stewardship checkpoint
 
@@ -77,8 +97,8 @@ The current local MVP includes:
 - read-only inventory, diagnosis, reporting, and classification commands
 - approval-gated proposal/apply/undo workflows
 - Wishstone asset intake under `asset_pipeline/`, with source-copy intake, reviewable outbox jobs, approved exports, and reusable library sets
-- CareBloomOS copy-first consolidation and archive/deletion-review staging
-- R: user-profile migration staging and hierarchy reports
+- legacy CareBloomOS consolidation/archive planning (execution held)
+- user-profile migration planning and hierarchy reports (execution held)
 
 Typical local launch:
 

@@ -618,6 +618,7 @@
     const entries = [
       { id: "patrol-status", mode: "manage", group: "STEWARDSHIP", title: "Patrol Status", summary: "Coverage, review families, changes, and authority history.", touches: ["Mini ARK ledger"], actionId: "patrol-status", details: "Inspect recent bounded Shadow runs and scoped policy receipts.", tags: ["patrol", "authority", "coverage"], risk: "green" },
       { id: "recovery-status", mode: "manage", group: "STEWARDSHIP", title: "Recovery & Repair", summary: "Recovery evidence, validation coverage, and task authority.", touches: ["Local recovery evidence"], actionId: "recovery-status", details: "Originals remain unchanged. Recovery does not authorize retirement.", tags: ["recovery", "repair", "media"], risk: "green" },
+      { id: "media-inventory-resume", mode: "manage", group: "STEWARDSHIP", title: "Continue Media Inventory", summary: "Next bounded inventory and hash batch.", touches: ["Registered sources: read only", "Private progress ledger"], actionId: "media-inventory-resume", details: "Resumes registered work only. Held files stay held. No repair, move, deletion, or semantic inspection.", tags: ["recovery", "inventory", "resume", "hash"], risk: "green" },
       { id: "perception-policy", mode: "manage", group: "PRIVACY", title: "Perception Policy", summary: "Inherited inspection, retention, and learning permissions.", touches: ["Journey privacy registry"], actionId: "perception-policy", privacyForm: true, details: "Semantic providers remain disabled. Structural inspection does not grant semantic access.", tags: ["privacy", "seal", "perception"], risk: "green" },
       { id: "diagnostics", mode: "tools", group: "SYSTEM TOOLS", title: "Diagnostics", summary: "Checks Mini ARK health, ledger, schema, scan history, handoffs, and open loops.", touches: ["Mini ARK ledger", "Navigator output", "No project files"], actionId: "doctor", details: "Runs the local doctor command and returns the result here.", tags: ["doctor", "health", "status", "diag", "diagnostics"], risk: "green" },
       { id: "brief", mode: "tools", group: "SYSTEM TOOLS", title: "Current Brief", summary: "Shows unreconciled events, open loops, pending proposals, and recent operating pressure.", touches: ["Mini ARK ledger", "Navigator output", "No project files"], actionId: "brief", details: "Runs the daily orientation command and returns the brief here.", tags: ["brief", "status", "pending", "proposals"], risk: "green" },
@@ -734,11 +735,20 @@
       if (mode !== "results") search.value = "";
     }
     function showDetailHtml(html) { detail.innerHTML = html; }
+    function patrolCoverage(run) {
+      return JSON.stringify({
+        discovery: run.coverage ?? null,
+        dependency: run.dependency_coverage ?? {
+          dependency_state: "UNKNOWN", dependency_clearance: false,
+          reason: "Dependency coverage was not recorded for this run."
+        }
+      }, null, 2);
+    }
     function showOutput(title, payload) {
       if (payload.ok && (payload.action === "patrol-status" || payload.patrol)) {
         const patrol = payload.patrol || payload;
         live.textContent = "Patrol evidence loaded. Shadow authority; Gate A remains open.";
-        showDetailHtml(`<h2>Patrol</h2>${(patrol.runs || []).slice(0, 5).map(run => `<article class="item"><div><h3>${esc(run.scope)}</h3><p>${esc(run.status)} · ${run.files_examined} examined · ${run.files_implicated} implicated · ${run.estimated_human_decisions} decisions</p><p>${esc(run.evidence_source)} · ${esc(run.lifecycle_posture?.value || "CONSTRUCTION")} · ${esc(run.attention_posture || "")}</p>${(run.families || []).map(family => `<p>${esc(family.resolution_strategy)}: ${family.count} files · ${esc(family.recommended_action)}</p>`).join("")}<details><summary>Evidence and coverage</summary><pre>${esc(JSON.stringify(run.coverage, null, 2))}</pre></details></div></article>`).join("")}<details><summary>Authority history</summary><pre>${esc(JSON.stringify(patrol.policies || [], null, 2))}</pre></details>`);
+        showDetailHtml(`<h2>Patrol</h2>${(patrol.runs || []).slice(0, 5).map(run => `<article class="item"><div><h3>${esc(run.scope)}</h3><p>${esc(run.status)} · ${run.files_examined} examined · ${run.files_implicated} implicated · ${run.estimated_human_decisions} decisions</p><p>${esc(run.evidence_source)} · ${esc(run.lifecycle_posture?.value || "CONSTRUCTION")} · ${esc(run.attention_posture || "")}</p>${(run.families || []).map(family => `<p>${esc(family.resolution_strategy)}: ${family.count} files · ${esc(family.recommended_action)}</p>`).join("")}<details><summary>Evidence and coverage</summary><pre>${esc(patrolCoverage(run))}</pre></details></div></article>`).join("")}<details><summary>Authority history</summary><pre>${esc(JSON.stringify(patrol.policies || [], null, 2))}</pre></details>`);
         const control = patrol.control_state;
         if (control) detail.insertAdjacentHTML("afterbegin", `<p>${esc(control.lifecycle)} · ${esc(control.mode)} · ${esc(control.authority)}</p><label><input type="checkbox" data-patrol-paused data-version="${Number(control.version)}" ${control.paused ? "checked" : ""}> Pause Patrol between sweeps</label><p>Background schedule: not enabled</p>`);
         return;

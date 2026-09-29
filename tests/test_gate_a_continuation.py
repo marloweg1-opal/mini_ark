@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import journal
-from core.dependency_evidence import inspect_references
+from dependency_fixture import inspect_references
+from core.reference_formats import structured_references
 from core.patrol_state import read_state, update_state
 from core.retirement_evidence import evaluate_retirement
 from db.database import initialize_schema
@@ -37,7 +38,9 @@ class GateAContinuationTests(unittest.TestCase):
             (root/'shortcut.lnk').write_bytes(b'unknown binary reference')
             result = inspect_references(['asset.png'], [tmp])
             self.assertTrue(result['errors'])
-            self.assertTrue(any(r['state'] == 'UNRESOLVED_DYNAMIC' for r in result['structured_candidates']))
+            literals, _ = structured_references(root/'skin.ini', '[Skin]\nImageName=#@#Images\\asset.png')
+            self.assertTrue(any(r['state'] == 'UNRESOLVED_DYNAMIC' for r in literals))
+            self.assertEqual(result['structured_candidates'], [])
             self.assertFalse(result['dependency_clearance'])
 
     def test_retirement_requires_role_not_just_matching_content(self):

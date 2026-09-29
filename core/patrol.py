@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import stat
 import time
@@ -118,6 +119,17 @@ def minimum_organization(group_count, parent_count, *, demonstrated_utility=Fals
 
 def live_discover(scope, *, max_files=500, max_entries=10000, max_seconds=15, max_depth=20):
     """Never follow symlinks/junctions; report incomplete coverage explicitly."""
+    if any(type(value) is not int or value <= 0 for value in (max_files, max_entries)):
+        raise ValueError('Positive integer discovery count budgets required')
+    if type(max_depth) is not int or max_depth < 0:
+        raise ValueError('A nonnegative integer discovery depth is required')
+    try:
+        valid_time = type(max_seconds) in (int, float) and math.isfinite(max_seconds) and max_seconds > 0
+    except OverflowError:
+        valid_time = False
+    if not valid_time:
+        raise ValueError('A finite positive discovery time budget is required')
+    from core.read_guard import require_path_not_held
     started = time.monotonic()
     rows, errors, skipped = [], [], []
     visited = 0
@@ -128,6 +140,7 @@ def live_discover(scope, *, max_files=500, max_entries=10000, max_seconds=15, ma
             bounded = True
             return
         try:
+            require_path_not_held(path)
             metadata = os.lstat(path)
             if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
                 skipped.append({"path": str(path), "reason": "reparse_point"})
@@ -139,19 +152,28 @@ def live_discover(scope, *, max_files=500, max_entries=10000, max_seconds=15, ma
                 return
             if not stat.S_ISDIR(metadata.st_mode):
                 return
+            require_path_not_held(path)
             with os.scandir(path) as entries:
-                for entry in entries:
+                while True:
                     if len(rows) >= max_files or visited >= max_entries or time.monotonic() - started >= max_seconds:
                         bounded = True
+                        break
+                    require_path_not_held(path)
+                    try:
+                        entry = next(entries)
+                    except StopIteration:
                         break
                     visited += 1
                     walk(Path(entry.path), depth + 1)
         except OSError as exc:
             errors.append({"path": str(path), "error": str(exc)})
     # A reparse ancestor is just as unsafe as a reparse leaf.
-    candidate = Path(scope).absolute()
     try:
+        require_path_not_held(scope)
+        candidate = Path(scope).absolute()
         for ancestor in candidate.parents:
+            require_path_not_held(candidate)
+            require_path_not_held(ancestor)
             info = os.lstat(ancestor)
             if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
                 return [], {"complete": False, "errors": [], "skipped": [{"path": str(ancestor), "reason": "reparse_ancestor"}], "entries": 0}

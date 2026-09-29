@@ -2,6 +2,15 @@
   "schema_version": 1,
   "architecture_schema": 1,
   "operation_contract": 1,
+  "resource_feasibility": {
+    "principle": "Minimum Sufficient Resources: technically preferred does not mean currently feasible.",
+    "dimensions": ["storage", "hardware", "money", "network", "compute", "physical_access"],
+    "unavailable_state": "RESOURCE_BLOCKED",
+    "unknown_state": "RESOURCE_UNKNOWN",
+    "resource_constraints_grant_authority": false,
+    "risk_tradeoffs_require_explicit_approval": true,
+    "waiting_is_valid": true
+  },
   "identity_model": {
     "principle": "Paths are not identity.",
     "layers": [

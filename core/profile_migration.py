@@ -263,6 +263,11 @@ def _write_profile_markdown(path: Path, plan: dict) -> None:
 
 
 def execute_profile_migration_map(plan_path: str) -> dict:
+    raise PermissionError(
+        "STEWARDSHIP_REVIEW_REQUIRED: Legacy profile staging is held pending "
+        "journaled, no-replace execution and affirmative action evidence. "
+        "No plan or source was read."
+    )
     plan_file = Path(plan_path)
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
     target = Path(plan["target_root"])

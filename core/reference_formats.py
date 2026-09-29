@@ -5,6 +5,10 @@ import ntpath
 import re
 import tomllib
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
+
+STRUCTURED_EXTENSIONS = frozenset({'.json', '.toml', '.ini', '.cfg', '.conf',
+                                  '.url', '.xml', '.css', '.html', '.htm'})
 
 
 def structured_references(path, text):
@@ -42,6 +46,19 @@ def structured_references(path, text):
                     values.append((node.tag, node.text.strip()))
         elif suffix == '.css':
             values.extend(('url', m.group(1).strip(' \"\'')) for m in re.finditer(r'url\(([^)]+)\)', text))
+        elif suffix in {'.html', '.htm'}:
+            class References(HTMLParser):
+                def handle_starttag(self, tag, attrs):
+                    for key, value in attrs:
+                        if value and key in {'src', 'href', 'poster', 'data'}:
+                            values.append((f'{tag}@{key}', value))
+                        elif value and key == 'srcset':
+                            errors.append('HTML srcset requires separate candidate parsing')
+                    if tag == 'base':
+                        errors.append('HTML base changes resolution; relative references unresolved')
+            parser = References(convert_charrefs=True)
+            parser.feed(text)
+            parser.close()
     except (ValueError, configparser.Error, ET.ParseError) as exc:
         errors.append(str(exc))
     result = []
@@ -51,10 +68,15 @@ def structured_references(path, text):
         if location.lower().endswith('iconresource'):
             value = re.sub(r',-?\d+$', '', value)
         dynamic = any(token in value for token in ('#', '%', '$', '*', '?'))
+        if suffix in {'.html', '.htm'} and any('HTML base' in error for error in errors):
+            dynamic = True
         if dynamic:
             result.append({'field': location, 'raw': value, 'state': 'UNRESOLVED_DYNAMIC'})
-        elif value and not re.match(r'^[a-z]+://', value, re.I):
+        elif value and not re.match(r'^[a-z][a-z0-9+.-]*:', value, re.I) and not value.startswith('//'):
             resolved = ntpath.normpath(ntpath.join(str(path.parent), value))
             result.append({'field': location, 'raw': value, 'resolved': resolved,
                            'state': 'LITERAL_REFERENCE_CANDIDATE'})
+        elif re.match(r'^[a-z]:[\\/]', value, re.I):
+            result.append({'field':location, 'raw':value, 'resolved':ntpath.normpath(value),
+                           'state':'LITERAL_REFERENCE_CANDIDATE'})
     return result, errors

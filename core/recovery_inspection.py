@@ -4,23 +4,46 @@ import os
 import hashlib
 import stat
 from pathlib import Path
+from core.read_guard import require_path_not_held
 
 
-def file_identity(path):
+def file_identity(path, *, max_bytes=256_000_000):
     """Bounded regular-file evidence; unsupported or unstable objects stay unknown."""
+    if type(max_bytes) is not int or max_bytes <= 0:
+        return None
+    max_bytes = min(max_bytes, 256_000_000)
     try:
-        before = path.lstat()
-        if not stat.S_ISREG(before.st_mode) or getattr(before, 'st_file_attributes', 0) & 1024 or before.st_size > 256_000_000:
+        from core.media_inventory import safe_metadata
+        path = Path(path)
+        before = safe_metadata(path, read_guard=require_path_not_held)
+        if not stat.S_ISREG(before.st_mode) or getattr(before, 'st_file_attributes', 0) & 1024 or before.st_size > max_bytes:
             return None
+        require_path_not_held(path)
         with path.open('rb') as stream:
-            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-        after = path.lstat()
+            opened = os.fstat(stream.fileno())
+            keys = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns')
+            if any(getattr(before, key) != getattr(opened, key) for key in keys):
+                return None
+            digest = hashlib.sha256()
+            remaining = before.st_size
+            while remaining:
+                require_path_not_held(path)
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    return None
+                digest.update(block)
+                remaining -= len(block)
+            finished = os.fstat(stream.fileno())
+            if any(getattr(opened, key) != getattr(finished, key) for key in keys):
+                return None
+            digest = digest.hexdigest()
+        after = safe_metadata(path, read_guard=require_path_not_held)
         keys = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns')
         if any(getattr(before, key) != getattr(after, key) for key in keys):
             return None
         return {'sha256':digest, 'size':after.st_size, 'inode':after.st_ino,
                 'device':after.st_dev, 'mtime_ns':after.st_mtime_ns}
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -29,12 +52,14 @@ def path_evidence(value):
         return {'state': 'UNKNOWN'}
     path = Path(value)
     try:
-        info = path.lstat()
+        from core.media_inventory import safe_metadata
+        info = safe_metadata(path, read_guard=require_path_not_held)
         return {'path': str(path), 'state': 'PRESENT', 'size': info.st_size,
-                'mtime_ns': info.st_mtime_ns, 'inode': info.st_ino, 'mode': info.st_mode}
+                'mtime_ns': info.st_mtime_ns, 'inode': info.st_ino, 'mode': info.st_mode,
+                'device': info.st_dev}
     except FileNotFoundError:
         return {'path': str(path), 'state': 'ABSENT'}
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return {'path': str(path), 'state': 'UNKNOWN', 'error': str(exc)}
 
 
@@ -47,6 +72,8 @@ def inspect_operation(conn, op_id):
         current = json.loads(row['new_state'] or '{}')
         if not isinstance(previous, dict) or not isinstance(current, dict):
             raise ValueError('Receipt states must be objects')
+        if not isinstance(previous.get('planned_changes', {}), dict):
+            raise ValueError('Planned changes must be an object')
         if row['action_type'] == 'file_move' and current.get('identity'):
             if not isinstance(current['identity'], dict) or not isinstance(current.get('path'), str) or not isinstance(previous.get('path'), str):
                 raise ValueError('Incomplete identity-bound paths')
@@ -69,10 +96,7 @@ def inspect_operation(conn, op_id):
         if identity is not None and identity != current['identity']:
             state = 'UNDO_BLOCKED_BY_DRIFT'
         elif identity == current['identity'] and source['state'] == 'ABSENT' and parent['state'] == 'PRESENT':
-            try:
-                same_volume = Path(previous['path']).parent.stat().st_dev == identity['device']
-            except OSError:
-                same_volume = False
+            same_volume = parent.get('device') == identity['device']
             state = 'UNDO_AVAILABLE' if os.name == 'nt' and same_volume else 'UNDO_REQUIRES_REVIEW'
         else:
             state = 'UNDO_REQUIRES_REVIEW'
